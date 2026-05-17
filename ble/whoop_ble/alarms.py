@@ -37,13 +37,27 @@ def _read_mac() -> Optional[str]:
 
 
 async def _with_strap(coro_fn):
-    """Connect to the strap, run coro_fn(client), disconnect."""
+    """Connect to the strap, run coro_fn(client), disconnect.
+
+    Retries connection a few times — after a daemon shutdown BlueZ can take
+    several seconds to release the bond and re-advertise it for our client.
+    """
     mac = _read_mac()
     if not mac:
         raise RuntimeError("WHOOP_BLE_MAC not set in .env — pair first")
-    client = WhoopBLE(mac)
-    async with client:
-        return await coro_fn(client)
+    last_err = None
+    for attempt in range(4):
+        client = WhoopBLE(mac)
+        try:
+            async with client:
+                return await coro_fn(client)
+        except Exception as e:
+            last_err = e
+            # Common bleak error after daemon teardown: "Device ... was not
+            # found" because the device descriptor in BlueZ is stale. A few
+            # seconds + retry usually fixes it.
+            await asyncio.sleep(3.0)
+    raise last_err if last_err else RuntimeError("connect failed")
 
 
 async def set_alarm(unix_ts: int) -> dict:

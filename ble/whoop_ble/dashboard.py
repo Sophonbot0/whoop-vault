@@ -129,6 +129,35 @@ def _start_bg_parser():
     return t
 
 
+# In-memory log of the last alarm operation (polled by the UI via /api/alarm/status)
+_alarm_state = {"running": False, "log": [], "result": None}
+
+
+def _alarm_op_threaded(fn, *args):
+    """Run an alarm operation in a background thread; UI polls for status."""
+    def _runner():
+        _alarm_state["running"] = True
+        _alarm_state["log"] = ["Starting..."]
+        _alarm_state["result"] = None
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(_alarm_op(fn, *args))
+            finally:
+                loop.close()
+            _alarm_state["log"] = result.get("log", [])
+            _alarm_state["result"] = result
+        except Exception as e:
+            import traceback
+            _alarm_state["log"] = [f"ERROR: {e}", traceback.format_exc()[-400:]]
+            _alarm_state["result"] = {"ok": False, "error": str(e)}
+        finally:
+            _alarm_state["running"] = False
+
+    t = threading.Thread(target=_runner, daemon=True, name="alarm_op")
+    t.start()
+
+
 def _event_extra_summary(value_json: str) -> str:
     try:
         v = json.loads(value_json) if value_json else {}
@@ -502,6 +531,25 @@ async function refreshSetupStatus(){
   }catch(e){}
 }
 
+async function _pollAlarmOp(){
+  // Poll /api/alarm/status until running becomes false
+  while(true){
+    await new Promise(r => setTimeout(r, 1500));
+    try{
+      const s = await (await fetch('/api/alarm/status')).json();
+      if(s.log && s.log.length){
+        const lines = s.log.join('\\n');
+        if(pairLog.textContent.indexOf(lines.slice(-200)) === -1){
+          appendLog(lines);
+        }
+      }
+      if(!s.running){
+        appendLog('--- done: ' + JSON.stringify(s.result));
+        break;
+      }
+    }catch(e){ appendLog('poll error: ' + e); break; }
+  }
+}
 async function doSetAlarm(){
   const v = document.getElementById('alarm_time').value;
   if(!v){ appendLog('✗ Pick a date/time first'); return; }
@@ -511,25 +559,32 @@ async function doSetAlarm(){
   try{
     const r = await fetch('/api/alarm/set?ts=' + ts, {method:'POST'});
     appendLog(JSON.stringify(await r.json()));
+    await _pollAlarmOp();
   }catch(e){ appendLog('ERROR: ' + e); }
   setBtns(false);
 }
 async function doGetAlarm(){
   appendLog('=== Read current alarm ==='); setBtns(true);
-  try{ appendLog(JSON.stringify(await (await fetch('/api/alarm/get', {method:'POST'})).json())); }
-  catch(e){ appendLog('ERROR: ' + e); }
+  try{
+    appendLog(JSON.stringify(await (await fetch('/api/alarm/get', {method:'POST'})).json()));
+    await _pollAlarmOp();
+  } catch(e){ appendLog('ERROR: ' + e); }
   setBtns(false);
 }
 async function doDisableAlarm(){
   appendLog('=== Clearing alarm ==='); setBtns(true);
-  try{ appendLog(JSON.stringify(await (await fetch('/api/alarm/disable', {method:'POST'})).json())); }
-  catch(e){ appendLog('ERROR: ' + e); }
+  try{
+    appendLog(JSON.stringify(await (await fetch('/api/alarm/disable', {method:'POST'})).json()));
+    await _pollAlarmOp();
+  } catch(e){ appendLog('ERROR: ' + e); }
   setBtns(false);
 }
 async function doRunAlarm(){
   appendLog('=== Triggering alarm NOW ==='); setBtns(true);
-  try{ appendLog(JSON.stringify(await (await fetch('/api/alarm/run', {method:'POST'})).json())); }
-  catch(e){ appendLog('ERROR: ' + e); }
+  try{
+    appendLog(JSON.stringify(await (await fetch('/api/alarm/run', {method:'POST'})).json()));
+    await _pollAlarmOp();
+  } catch(e){ appendLog('ERROR: ' + e); }
   setBtns(false);
 }
 refreshSetupStatus();
@@ -635,7 +690,8 @@ poll(); setInterval(poll,1000);
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a, **kw): pass
+    def log_message(self, fmt, *args):
+        print(f"[HTTP] {self.address_string()} - {fmt % args}", flush=True)
 
     def _json(self, body: dict, code: int = 200) -> None:
         data = json.dumps(body).encode()
@@ -654,6 +710,18 @@ class Handler(BaseHTTPRequestHandler):
             loop.close()
 
     def do_POST(self):
+        try:
+            self._do_post_inner()
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[ERR] POST {self.path}: {e}\n{tb}", flush=True)
+            try:
+                self._json({"ok": False, "error": str(e), "trace": tb[-800:]}, code=500)
+            except Exception:
+                pass
+
+    def _do_post_inner(self):
         u = urlparse(self.path)
         if u.path == "/api/pair":
             mac = None
@@ -678,18 +746,33 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "bad ts"})
             if ts <= 0:
                 return self._json({"ok": False, "error": "ts must be > 0"})
-            return self._json(self._run_async(_alarm_op(alarms_mod.set_alarm, ts)))
+            if _alarm_state["running"]:
+                return self._json({"ok": False, "error": "alarm op already running"})
+            _alarm_op_threaded(alarms_mod.set_alarm, ts)
+            return self._json({"ok": True, "started": True,
+                               "poll": "/api/alarm/status"})
         if u.path == "/api/alarm/get":
-            return self._json(self._run_async(_alarm_op(alarms_mod.get_alarm)))
+            if _alarm_state["running"]:
+                return self._json({"ok": False, "error": "alarm op already running"})
+            _alarm_op_threaded(alarms_mod.get_alarm)
+            return self._json({"ok": True, "started": True, "poll": "/api/alarm/status"})
         if u.path == "/api/alarm/disable":
-            return self._json(self._run_async(_alarm_op(alarms_mod.disable_alarm)))
+            if _alarm_state["running"]:
+                return self._json({"ok": False, "error": "alarm op already running"})
+            _alarm_op_threaded(alarms_mod.disable_alarm)
+            return self._json({"ok": True, "started": True, "poll": "/api/alarm/status"})
         if u.path == "/api/alarm/run":
-            return self._json(self._run_async(_alarm_op(alarms_mod.run_alarm_now)))
+            if _alarm_state["running"]:
+                return self._json({"ok": False, "error": "alarm op already running"})
+            _alarm_op_threaded(alarms_mod.run_alarm_now)
+            return self._json({"ok": True, "started": True, "poll": "/api/alarm/status"})
         self.send_response(404)
         self.end_headers()
 
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path == "/api/alarm/status":
+            return self._json(_alarm_state)
         if u.path == "/api/status":
             base = pairing.status()
             # Latest alarm from event log

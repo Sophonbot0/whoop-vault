@@ -237,8 +237,23 @@ async def stop_daemon() -> dict:
         return {"ok": True, "log": ["No daemon was running"]}
     try:
         os.kill(pid, signal.SIGTERM)
-        await asyncio.sleep(2)
-        return {"ok": True, "log": [f"Stopped daemon PID {pid}"]}
+        # Wait up to 15s for graceful shutdown (BLE disconnect + DB flush)
+        for i in range(30):
+            await asyncio.sleep(0.5)
+            try:
+                os.kill(pid, 0)  # probe
+            except ProcessLookupError:
+                # Also give BlueZ time to release the bond + clear cached
+                # device entry so a follow-up scan can re-discover the strap
+                await asyncio.sleep(2.0)
+                return {"ok": True, "log": [f"Stopped daemon PID {pid}"]}
+        # Still alive after 15s — escalate
+        try:
+            os.kill(pid, signal.SIGKILL)
+            await asyncio.sleep(2.0)
+        except ProcessLookupError:
+            pass
+        return {"ok": True, "log": [f"Force-killed daemon PID {pid}"]}
     except Exception as e:
         return {"ok": False, "log": [f"Stop failed: {e}"]}
 
