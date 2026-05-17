@@ -26,25 +26,20 @@ def _ensure_db() -> None:
     """Make sure the DB exists with all base tables. Idempotent."""
     DB.parent.mkdir(parents=True, exist_ok=True)
     conn = _db_connect()
-    # Tables created by events.py/parse_historical.py lazily — pre-create them
-    # so the dashboard's first query doesn't fail on a fresh checkout.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS ble_historical_parsed ("
-        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " ts REAL NOT NULL,"
-        " record_type TEXT NOT NULL,"
-        " value_json TEXT,"
-        " dump_run_id TEXT,"
-        " source_seq INTEGER,"
-        " source_id INTEGER"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS ix_hp_ts ON ble_historical_parsed(ts)"
-    )
+    # The base schema in db.py creates ble_historical_parsed WITHOUT source_id
+    # (used by background incremental parser). Add it if missing.
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(ble_historical_parsed)"
+    ).fetchall()]
+    if cols and "source_id" not in cols:
+        try:
+            conn.execute("ALTER TABLE ble_historical_parsed ADD COLUMN source_id INTEGER")
+        except Exception:
+            pass
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_hp_source_id ON ble_historical_parsed(source_id)"
     )
+    # events.py creates ble_events_v2 lazily; pre-create for cold queries.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS ble_events_v2 ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
