@@ -229,6 +229,7 @@ HTML = """<!doctype html>
 <div class="tabs">
   <div class="tab active" data-tab="setup">Setup &amp; Pairing</div>
   <div class="tab" data-tab="live">Live</div>
+  <div class="tab" data-tab="alarms">Alarms</div>
 </div>
 
 <div class="tab-content" id="tab-live">
@@ -368,12 +369,17 @@ HTML = """<!doctype html>
     </div>
   </div>
 
+</div><!-- /tab-setup -->
+
+<div class="tab-content" id="tab-alarms">
   <h2>Alarms</h2>
   <div class="card">
     <div class="meta">The strap has a built-in single alarm slot that buzzes
-    at a given time. The dashboard auto-pauses the data daemon, sends the
-    command, and restarts the daemon — no data is lost, the historical
-    drain resumes from where it left off.</div>
+    at a given time, even when disconnected from BLE. The dashboard
+    auto-pauses the data daemon, sends the command, and restarts the
+    daemon — no data is lost, the historical drain resumes from where it
+    left off (every chunk is keyed by <code>record_id</code> and dedup is
+    automatic).</div>
     <div class="stat" style="margin-top:14px">
       <span class="stat-label">Current alarm (from last event)</span>
       <span class="stat-value" id="alarm_current">—</span></div>
@@ -389,7 +395,8 @@ HTML = """<!doctype html>
       <button class="btn danger" onclick="doDisableAlarm()">Clear alarm</button>
     </div>
   </div>
-</div><!-- /tab-setup -->
+  <div class="pair-log" id="pair_log_alarms" style="margin-top:16px">Ready.</div>
+</div><!-- /tab-alarms -->
 <script>
 // Tabs
 function activateTab(name){
