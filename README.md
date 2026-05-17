@@ -28,6 +28,24 @@ Built by reverse-engineering firmware **r52 (Maverick variant)** from the decomp
 - **Battery state** (voltage, charging, current draw)
 - **Sensor saturation reports** (`CH1/CH2_SATURATION_DETECTED`)
 
+### Alarms (read & write)
+The Whoop 5.0 firmware has a single on-strap alarm slot that triggers a
+30-second haptic buzz at a scheduled time, even when the strap is
+disconnected from BLE. Whoop Vault can:
+
+- **Schedule** an alarm for any future date/time
+- **Read** the currently configured alarm from the strap
+- **Trigger** the alarm immediately (test buzz)
+- **Clear** the alarm
+- **Display** the currently set alarm from the most recent
+  `STRAP_DRIVEN_ALARM_SET` event log entry
+
+Use the **Alarms** section in the dashboard's Setup tab. The dashboard
+automatically pauses the data daemon, sends the BLE command, verifies the
+response, and restarts the daemon — no historical data is lost, the drain
+resumes from where it left off (every chunk is keyed by `record_id`, dedup
+is automatic).
+
 ### Imported from the official ZIP export
 If you previously downloaded a "Download My Data" ZIP from `app.whoop.com`, Whoop Vault can ingest:
 - `cycles` — daily strain / recovery / RHR / HRV / kJ

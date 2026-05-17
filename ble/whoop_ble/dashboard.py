@@ -23,6 +23,47 @@ from whoop_ble.db import connect as _db_connect
 DB = Path(__file__).resolve().parent.parent.parent / "data" / "whoop.db"
 
 
+async def _alarm_op(fn, *args):
+    """Pause daemon → run BLE op → restart daemon (if it was running).
+
+    Returns dict with: ok, result (op output), restarted (bool), log[].
+    """
+    log = []
+    was_running = pairing.daemon_pid() is not None
+    if was_running:
+        log.append("⏸  Stopping daemon (single-client BLE)...")
+        stop_res = await pairing.stop_daemon()
+        log.extend(stop_res.get("log", []))
+        await asyncio.sleep(1.5)  # give BlueZ time to drop the connection
+
+    op_result = None
+    op_error = None
+    try:
+        log.append(f"→ {fn.__name__}({args})")
+        op_result = await fn(*args)
+        log.append(f"  result: {op_result}")
+    except Exception as e:
+        op_error = str(e)
+        log.append(f"  ERROR: {e}")
+
+    restarted = False
+    if was_running:
+        log.append("▶  Restarting daemon...")
+        await asyncio.sleep(1.0)
+        start_res = await pairing.start_daemon()
+        log.extend(start_res.get("log", []))
+        restarted = start_res.get("ok", False)
+
+    return {
+        "ok": op_error is None,
+        "result": op_result,
+        "error": op_error,
+        "restarted": restarted,
+        "was_running": was_running,
+        "log": log,
+    }
+
+
 def _ensure_db() -> None:
     """Make sure the DB exists with all base tables. Idempotent."""
     DB.parent.mkdir(parents=True, exist_ok=True)
@@ -329,9 +370,10 @@ HTML = """<!doctype html>
 
   <h2>Alarms</h2>
   <div class="card">
-    <div class="meta">The strap has a built-in single alarm slot. The dashboard
-    can schedule, read, trigger, or clear it. <b>Stop the daemon first</b>
-    (Setup → Stop daemon) — BLE is single-client.</div>
+    <div class="meta">The strap has a built-in single alarm slot that buzzes
+    at a given time. The dashboard auto-pauses the data daemon, sends the
+    command, and restarts the daemon — no data is lost, the historical
+    drain resumes from where it left off.</div>
     <div class="stat" style="margin-top:14px">
       <span class="stat-label">Current alarm (from last event)</span>
       <span class="stat-value" id="alarm_current">—</span></div>
@@ -629,34 +671,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "bad ts"})
             if ts <= 0:
                 return self._json({"ok": False, "error": "ts must be > 0"})
-            if pairing.daemon_pid():
-                return self._json({"ok": False,
-                                   "error": "Stop the daemon first (single-client BLE)"})
-            try:
-                return self._json(self._run_async(alarms_mod.set_alarm(ts)))
-            except Exception as e:
-                return self._json({"ok": False, "error": str(e)})
+            return self._json(self._run_async(_alarm_op(alarms_mod.set_alarm, ts)))
         if u.path == "/api/alarm/get":
-            if pairing.daemon_pid():
-                return self._json({"ok": False, "error": "Stop the daemon first"})
-            try:
-                return self._json(self._run_async(alarms_mod.get_alarm()))
-            except Exception as e:
-                return self._json({"ok": False, "error": str(e)})
+            return self._json(self._run_async(_alarm_op(alarms_mod.get_alarm)))
         if u.path == "/api/alarm/disable":
-            if pairing.daemon_pid():
-                return self._json({"ok": False, "error": "Stop the daemon first"})
-            try:
-                return self._json(self._run_async(alarms_mod.disable_alarm()))
-            except Exception as e:
-                return self._json({"ok": False, "error": str(e)})
+            return self._json(self._run_async(_alarm_op(alarms_mod.disable_alarm)))
         if u.path == "/api/alarm/run":
-            if pairing.daemon_pid():
-                return self._json({"ok": False, "error": "Stop the daemon first"})
-            try:
-                return self._json(self._run_async(alarms_mod.run_alarm_now()))
-            except Exception as e:
-                return self._json({"ok": False, "error": str(e)})
+            return self._json(self._run_async(_alarm_op(alarms_mod.run_alarm_now)))
         self.send_response(404)
         self.end_headers()
 
