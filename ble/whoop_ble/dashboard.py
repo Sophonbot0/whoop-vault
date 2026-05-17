@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from whoop_ble import pairing
+from whoop_ble import alarms as alarms_mod
 from whoop_ble.db import connect as _db_connect
 
 DB = Path(__file__).resolve().parent.parent.parent / "data" / "whoop.db"
@@ -325,6 +326,27 @@ HTML = """<!doctype html>
       <button class="btn secondary" onclick="doPairManual()">Pair with this MAC</button>
     </div>
   </div>
+
+  <h2>Alarms</h2>
+  <div class="card">
+    <div class="meta">The strap has a built-in single alarm slot. The dashboard
+    can schedule, read, trigger, or clear it. <b>Stop the daemon first</b>
+    (Setup → Stop daemon) — BLE is single-client.</div>
+    <div class="stat" style="margin-top:14px">
+      <span class="stat-label">Current alarm (from last event)</span>
+      <span class="stat-value" id="alarm_current">—</span></div>
+    <div class="btn-row" style="margin-top:16px">
+      <input id="alarm_time" type="datetime-local"
+             style="flex:1;padding:12px;background:#0a0d12;border:1px solid var(--grid);
+             border-radius:8px;color:var(--text);font-family:monospace;font-size:13px"/>
+      <button class="btn" onclick="doSetAlarm()">Schedule</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn secondary" onclick="doGetAlarm()">Read current</button>
+      <button class="btn secondary" onclick="doRunAlarm()">Trigger now (test buzz)</button>
+      <button class="btn danger" onclick="doDisableAlarm()">Clear alarm</button>
+    </div>
+  </div>
 </div><!-- /tab-setup -->
 <script>
 // Tabs
@@ -423,7 +445,43 @@ async function refreshSetupStatus(){
       badge.textContent = 'stopped';
     }
     document.getElementById('setup_mac').textContent = s.saved_mac || '— (not paired yet)';
+    if(s.alarm){
+      document.getElementById('alarm_current').textContent = s.alarm.iso + ' (' + (s.alarm.duration_s||'?') + 's buzz)';
+    } else {
+      document.getElementById('alarm_current').textContent = 'no alarm scheduled';
+    }
   }catch(e){}
+}
+
+async function doSetAlarm(){
+  const v = document.getElementById('alarm_time').value;
+  if(!v){ appendLog('✗ Pick a date/time first'); return; }
+  const ts = Math.floor(new Date(v).getTime() / 1000);
+  appendLog('=== Scheduling alarm for ' + new Date(ts*1000).toLocaleString() + ' ===');
+  setBtns(true);
+  try{
+    const r = await fetch('/api/alarm/set?ts=' + ts, {method:'POST'});
+    appendLog(JSON.stringify(await r.json()));
+  }catch(e){ appendLog('ERROR: ' + e); }
+  setBtns(false);
+}
+async function doGetAlarm(){
+  appendLog('=== Read current alarm ==='); setBtns(true);
+  try{ appendLog(JSON.stringify(await (await fetch('/api/alarm/get', {method:'POST'})).json())); }
+  catch(e){ appendLog('ERROR: ' + e); }
+  setBtns(false);
+}
+async function doDisableAlarm(){
+  appendLog('=== Clearing alarm ==='); setBtns(true);
+  try{ appendLog(JSON.stringify(await (await fetch('/api/alarm/disable', {method:'POST'})).json())); }
+  catch(e){ appendLog('ERROR: ' + e); }
+  setBtns(false);
+}
+async function doRunAlarm(){
+  appendLog('=== Triggering alarm NOW ==='); setBtns(true);
+  try{ appendLog(JSON.stringify(await (await fetch('/api/alarm/run', {method:'POST'})).json())); }
+  catch(e){ appendLog('ERROR: ' + e); }
+  setBtns(false);
 }
 refreshSetupStatus();
 setInterval(refreshSetupStatus, 3000);
@@ -563,13 +621,63 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self._run_async(pairing.start_daemon()))
         if u.path == "/api/stop-daemon":
             return self._json(self._run_async(pairing.stop_daemon()))
+        if u.path == "/api/alarm/set":
+            q = parse_qs(u.query)
+            try:
+                ts = int(q.get("ts", ["0"])[0])
+            except Exception:
+                return self._json({"ok": False, "error": "bad ts"})
+            if ts <= 0:
+                return self._json({"ok": False, "error": "ts must be > 0"})
+            if pairing.daemon_pid():
+                return self._json({"ok": False,
+                                   "error": "Stop the daemon first (single-client BLE)"})
+            try:
+                return self._json(self._run_async(alarms_mod.set_alarm(ts)))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)})
+        if u.path == "/api/alarm/get":
+            if pairing.daemon_pid():
+                return self._json({"ok": False, "error": "Stop the daemon first"})
+            try:
+                return self._json(self._run_async(alarms_mod.get_alarm()))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)})
+        if u.path == "/api/alarm/disable":
+            if pairing.daemon_pid():
+                return self._json({"ok": False, "error": "Stop the daemon first"})
+            try:
+                return self._json(self._run_async(alarms_mod.disable_alarm()))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)})
+        if u.path == "/api/alarm/run":
+            if pairing.daemon_pid():
+                return self._json({"ok": False, "error": "Stop the daemon first"})
+            try:
+                return self._json(self._run_async(alarms_mod.run_alarm_now()))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)})
         self.send_response(404)
         self.end_headers()
 
     def do_GET(self):
         u = urlparse(self.path)
         if u.path == "/api/status":
-            return self._json(pairing.status())
+            base = pairing.status()
+            # Latest alarm from event log
+            try:
+                conn = sqlite3.connect(str(DB))
+                row = conn.execute(
+                    "SELECT json_extract(value_json,'$.extra_hex') "
+                    "FROM ble_events_v2 WHERE event_name='STRAP_DRIVEN_ALARM_SET' "
+                    "ORDER BY rx_ts DESC LIMIT 1"
+                ).fetchone()
+                conn.close()
+                if row and row[0]:
+                    base["alarm"] = alarms_mod.parse_alarm_event(row[0])
+            except Exception:
+                pass
+            return self._json(base)
         if u.path == "/":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")

@@ -171,6 +171,52 @@ def cmd_run_haptics(pattern: int = 1) -> bytes:
     return _enc(Cmd.RUN_HAPTICS_PATTERN, bytes([pattern & 0xFF]))
 
 
+# Alarms (per xg0/p0.java, xg0/q0.java) — Maverick supports a single alarm
+# stored on the strap that triggers haptics at a given unix timestamp.
+#
+# Default haptic pattern: 8 wave-form effects, 1 loop, 30s duration.
+DEFAULT_ALARM_HAPTIC = bytes([
+    49, 49, 49, 49, 49, 49, 49, 49,  # 8x wave-form effect (49 = strong rumble)
+    1, 0,                              # loopControlForEffects (u16 LE)
+    1,                                 # overallWaveformLoopControl
+    30,                                # alarmDurationInSeconds
+])
+
+
+def cmd_set_alarm_time(unix_ts: int, alarm_index: int = 0,
+                       haptic: bytes | None = None) -> bytes:
+    """Schedule the strap to wake & buzz at unix_ts seconds (UTC).
+
+    Layout (21 bytes, REVISION_4):
+      [0]     revision = 4
+      [1]     alarm_index (0)
+      [2:6]   u32 LE = unix_seconds
+      [6:8]   u16 LE = millis (0 here)
+      [8:20]  12-byte haptic pattern (see DEFAULT_ALARM_HAPTIC)
+    """
+    import struct as _s
+    h = haptic if haptic is not None else DEFAULT_ALARM_HAPTIC
+    if len(h) != 12:
+        raise ValueError(f"haptic must be 12 bytes, got {len(h)}")
+    payload = (
+        bytes([4, alarm_index & 0xFF]) +
+        _s.pack("<I", unix_ts & 0xFFFFFFFF) +
+        _s.pack("<H", 0) +
+        h
+    )
+    return _enc(Cmd.SET_ALARM_TIME, payload)
+
+
+def cmd_run_alarm() -> bytes:
+    """Trigger the configured alarm immediately (haptic + LED)."""
+    return _enc(Cmd.RUN_ALARM, bytes([4]))  # revision byte
+
+
+def cmd_disable_alarm() -> bytes:
+    """Cancel the scheduled alarm."""
+    return _enc(Cmd.DISABLE_ALARM, bytes([4]))
+
+
 __all__ = [
     "Cmd", "build_command",
     "cmd_link_valid", "cmd_toggle_realtime_hr", "cmd_toggle_generic_hr_profile",
@@ -181,6 +227,7 @@ __all__ = [
     "cmd_get_body_location_and_status", "cmd_get_clock", "cmd_get_max_protocol_version",
     "cmd_get_hello_harvard", "cmd_get_data_range", "cmd_get_advertising_name",
     "cmd_get_alarm_time", "cmd_get_research_packet",
+    "cmd_set_alarm_time", "cmd_run_alarm", "cmd_disable_alarm",
     "cmd_set_clock", "cmd_send_historical_data", "cmd_abort_historical",
     "cmd_set_read_pointer", "cmd_run_haptics",
 ]
