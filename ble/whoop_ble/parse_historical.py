@@ -156,29 +156,38 @@ def backfill_parsed(conn, *, incremental: bool = False) -> dict[str, int]:
         max_src = conn.execute(
             "SELECT COALESCE(MAX(source_id), 0) FROM ble_historical_parsed"
         ).fetchone()[0]
-        cur = conn.execute(
-            "SELECT id, ts, payload_json, dump_run_id FROM ble_historical "
-            "WHERE id > ? ORDER BY id",
-            (max_src,),
-        )
     else:
-        cur = conn.execute(
-            "SELECT id, ts, payload_json, dump_run_id FROM ble_historical ORDER BY id"
-        )
+        max_src = 0
 
-    # Track record_ids already seen this run + already in DB (cheap dedup)
+    # Track record_ids already in DB BEFORE opening the streaming cursor.
+    # Note: opening a second conn.execute() while iterating a streaming
+    # cursor invalidates the iterator in sqlite3 — that was a silent bug
+    # that caused inserted=0 even when raw had thousands of new chunks.
     seen = set()
     if incremental:
+        # Pull all rids (not just last 200k) — set is cheap, correctness first.
         for (rid,) in conn.execute(
-            "SELECT json_extract(value_json,'$.record_id') FROM ble_historical_parsed "
-            "WHERE source_id > ?", (max(0, max_src - 200000),)
+            "SELECT json_extract(value_json,'$.record_id') FROM ble_historical_parsed"
         ):
             if rid is not None:
                 seen.add(rid)
 
+    # Now open the streaming cursor (read all into memory to avoid future
+    # accidental invalidations when inserting).
+    if incremental:
+        rows = conn.execute(
+            "SELECT id, ts, payload_json, dump_run_id FROM ble_historical "
+            "WHERE id > ? ORDER BY id",
+            (max_src,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, ts, payload_json, dump_run_id FROM ble_historical ORDER BY id"
+        ).fetchall()
+
     inserted = 0
     skipped = 0
-    for src_id, rx_ts, payload_json, run_id in cur:
+    for src_id, rx_ts, payload_json, run_id in rows:
         try:
             rec = json.loads(payload_json)
             payload_hex = rec.get("payload_hex", "")
