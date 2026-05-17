@@ -39,32 +39,37 @@ If you previously downloaded a "Download My Data" ZIP from `app.whoop.com`, Whoo
 
 ## 🚀 Quick start
 
-### 1. Install (Linux only — needs BlueZ ≥ 5.66)
+### Requirements
+
+- **Linux** with **BlueZ ≥ 5.66** (tested on Ubuntu 25.04 / BlueZ 5.79)
+- **Python 3.10+**
+- A **Whoop 5.0** strap
+
+System packages:
 
 ```bash
-git clone https://github.com/YOUR-USER/whoop-vault.git
+sudo apt install bluez bluez-tools sqlite3 python3-venv
+```
+
+### Install & launch (one command)
+
+```bash
+git clone https://github.com/Sophonbot0/whoop-vault.git
 cd whoop-vault
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+make dashboard
 ```
 
-System packages required:
+That's it. The `make dashboard` target will:
 
-```bash
-sudo apt install bluez bluez-tools sqlite3
-```
+1. Verify your system has BlueZ + Python 3.10+
+2. Create a `.venv/` and install Python dependencies
+3. Initialize `data/whoop.db` with the required schema
+4. Create `.env` from `.env.example`
+5. Launch the web UI on **http://127.0.0.1:8787/**
 
-### 2. Launch the dashboard
+Open the URL — you'll land on the **Setup & Pairing** tab.
 
-```bash
-PYTHONPATH=ble .venv/bin/python -m whoop_ble.dashboard
-```
-
-Open **http://127.0.0.1:8787/** in your browser.
-
-The first time you launch, the page opens on the **Setup & Pairing** tab. After pairing succeeds, future launches open directly on the **Live** tab.
-
-### 3. Pair your Whoop 5.0
+### Pair your Whoop 5.0
 
 In the Setup tab:
 
@@ -74,12 +79,24 @@ In the Setup tab:
    - reset the local BlueZ controller (`power off / power on`)
    - scan for `WHOOP*` advertisements (10 s)
    - remove any stale bond, trust the device, run BLE pairing
-   - save the MAC to `.env`
+   - save the MAC to `.env` automatically
    - launch the background daemon
 
 The pair log streams progress live in the page. Pairing usually completes in 15–30 seconds.
 
-### 4. Watch the data flow
+Once paired, future runs of `make dashboard` will open directly on the **Live** tab.
+
+### Other make targets
+
+```bash
+make help        # show all targets
+make daemon      # run the BLE daemon standalone (no web UI)
+make test        # run the test suite (~106 tests)
+make init        # just create DB + .env, don't launch anything
+make clean       # nuke .venv data/ logs/ exports/ (DESTRUCTIVE)
+```
+
+### Watch the data flow
 
 Switch to the **Live** tab. You'll see:
 - 4 metric cards (HR, Skin Temp, Motion, Battery) updating at 1 Hz

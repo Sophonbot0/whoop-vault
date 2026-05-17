@@ -17,8 +17,53 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from whoop_ble import pairing
+from whoop_ble.db import connect as _db_connect
 
 DB = Path(__file__).resolve().parent.parent.parent / "data" / "whoop.db"
+
+
+def _ensure_db() -> None:
+    """Make sure the DB exists with all base tables. Idempotent."""
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = _db_connect()
+    # Tables created by events.py/parse_historical.py lazily — pre-create them
+    # so the dashboard's first query doesn't fail on a fresh checkout.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ble_historical_parsed ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " ts REAL NOT NULL,"
+        " record_type TEXT NOT NULL,"
+        " value_json TEXT,"
+        " dump_run_id TEXT,"
+        " source_seq INTEGER,"
+        " source_id INTEGER"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_hp_ts ON ble_historical_parsed(ts)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_hp_source_id ON ble_historical_parsed(source_id)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ble_events_v2 ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " rx_ts REAL NOT NULL,"
+        " device_ts REAL,"
+        " event_id INTEGER NOT NULL,"
+        " event_name TEXT NOT NULL,"
+        " value_json TEXT,"
+        " source_packet_id INTEGER UNIQUE"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_events_v2_rx ON ble_events_v2(rx_ts)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_events_v2_name ON ble_events_v2(event_name)"
+    )
+    conn.commit()
+    conn.close()
 
 
 def _background_parser():
@@ -693,6 +738,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = 8787
+    _ensure_db()
     print(f"dashboard: http://127.0.0.1:{port}/  (db={DB})")
     _start_bg_parser()
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
