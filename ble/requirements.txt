@@ -1,3 +1,4 @@
+# Kept for backwards compat — same as top-level requirements.txt
 bleak>=0.21
 python-dotenv>=1.0
 pytest>=8.0
