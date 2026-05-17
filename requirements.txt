@@ -1,0 +1,4 @@
+# Whoop Vault — local BLE only. No cloud.
+bleak>=0.21,<0.23
+python-dotenv>=1.0,<2
+pandas>=2.0,<3      # for CSV ZIP import (optional)

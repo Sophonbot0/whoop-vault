@@ -1,0 +1,16 @@
+{"ts": 1700000000.0, "seq": 1, "cmd": 49, "payload_hex": "0163"}
+{"ts": 1700000001.0, "seq": 2, "cmd": 49, "payload_hex": "0158"}
+{"ts": 1700000002.0, "seq": 3, "cmd": 49, "payload_hex": "014f"}
+{"ts": 1700000003.0, "seq": 4, "cmd": 49, "payload_hex": "020a00"}
+{"ts": 1700000004.0, "seq": 5, "cmd": 49, "payload_hex": "021400"}
+{"ts": 1700000005.0, "seq": 6, "cmd": 49, "payload_hex": "05e8030000"}
+{"ts": 1700000006.0, "seq": 7, "cmd": 49, "payload_hex": "05d0070000"}
+{"ts": 1700000007.0, "seq": 8, "cmd": 49, "payload_hex": "05b80b0000"}
+{"ts": 1700000008.0, "seq": 9, "cmd": 49, "payload_hex": "1057686f6f70"}
+{"ts": 1700000009.0, "seq": 10, "cmd": 49, "payload_hex": "1057686f6f70343033"}
+{"ts": 1700000010.0, "seq": 11, "cmd": 49, "payload_hex": "1041424344"}
+{"ts": 1700000011.0, "seq": 12, "cmd": 49, "payload_hex": "1100004842"}
+{"ts": 1700000012.0, "seq": 13, "cmd": 49, "payload_hex": "1133335642"}
+{"ts": 1700000013.0, "seq": 14, "cmd": 49, "payload_hex": "1100008442"}
+{"ts": 1700000014.0, "seq": 15, "cmd": 49, "payload_hex": "20deadbeefcafe"}
+{"ts": 1700000015.0, "seq": 16, "cmd": 49, "payload_hex": "20ff00ee11"}

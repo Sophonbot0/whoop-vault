@@ -1,0 +1,21 @@
+"""whoop_ble — cliente BLE autónomo para Whoop 5.0.
+
+Zero dependência da cloud Whoop. Toda a extracção raw é feita directamente
+da pulseira por Bluetooth Low Energy.
+"""
+
+__version__ = "0.1.0"
+
+# UUIDs do serviço custom Whoop 5.0
+WHOOP_SERVICE_UUID = "fd4b0001-cce1-4033-93ce-002d5875f58a"
+WHOOP_CHAR_CMD_TO_STRAP = "fd4b0002-cce1-4033-93ce-002d5875f58a"
+WHOOP_CHAR_CMD_FROM_STRAP = "fd4b0003-cce1-4033-93ce-002d5875f58a"
+WHOOP_CHAR_EVENTS_FROM_STRAP = "fd4b0004-cce1-4033-93ce-002d5875f58a"
+WHOOP_CHAR_DATA_FROM_STRAP = "fd4b0005-cce1-4033-93ce-002d5875f58a"
+WHOOP_CHAR_EXTRA_FROM_STRAP = "fd4b0007-cce1-4033-93ce-002d5875f58a"
+
+# Standard GATT
+GATT_HR_SERVICE = "0000180d-0000-1000-8000-00805f9b34fb"
+GATT_HR_MEASUREMENT = "00002a37-0000-1000-8000-00805f9b34fb"
+GATT_BATTERY_SERVICE = "0000180f-0000-1000-8000-00805f9b34fb"
+GATT_BATTERY_LEVEL = "00002a19-0000-1000-8000-00805f9b34fb"
