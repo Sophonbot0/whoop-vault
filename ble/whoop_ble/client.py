@@ -62,7 +62,21 @@ class WhoopBLE:
 
     async def connect(self) -> None:
         log.info("a ligar a %s ...", self.mac)
-        self.client = BleakClient(self.mac, timeout=30.0)
+        # Pre-scan to refresh BlueZ's device cache. Without this, after the
+        # strap goes off-wrist + back on, BleakClient.connect(mac) fails with
+        # 'Device ... not found' because the cached device record expired.
+        try:
+            from bleak import BleakScanner
+            dev = await BleakScanner.find_device_by_address(self.mac, timeout=8.0)
+            if dev is None:
+                log.warning("pre-scan: strap not advertising — try connect anyway")
+                self.client = BleakClient(self.mac, timeout=20.0)
+            else:
+                log.info("pre-scan: found %s (%s)", dev.address, dev.name or "?")
+                self.client = BleakClient(dev, timeout=20.0)
+        except Exception as e:
+            log.warning("pre-scan failed (%s) — fallback to raw mac connect", e)
+            self.client = BleakClient(self.mac, timeout=30.0)
         await self.client.connect()
         log.info("ligado: %s", self.client.is_connected)
         # MTU exchange — sem isto fica em 23 e a strap nunca responde porque
