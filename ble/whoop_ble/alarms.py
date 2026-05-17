@@ -37,25 +37,51 @@ def _read_mac() -> Optional[str]:
 
 
 async def _with_strap(coro_fn):
-    """Connect to the strap, run coro_fn(client), disconnect.
+    """Open a fresh bleak GATT connection just long enough to send a command.
 
-    Retries connection a few times — after a daemon shutdown BlueZ can take
-    several seconds to release the bond and re-advertise it for our client.
+    Pre-scans via bleak to populate BlueZ's device cache, then connects.
+    Retries up to 4 times because BlueZ can be slow to refresh.
     """
+    import logging
+    from bleak import BleakClient, BleakScanner
+    log = logging.getLogger("whoop_ble.alarms")
     mac = _read_mac()
     if not mac:
         raise RuntimeError("WHOOP_BLE_MAC not set in .env — pair first")
     last_err = None
     for attempt in range(4):
-        client = WhoopBLE(mac)
+        log.info("alarm connect attempt %d/4 to %s", attempt + 1, mac)
         try:
-            async with client:
-                return await coro_fn(client)
+            # Pre-scan: actively look for the strap so bleak/BlueZ has a fresh
+            # device entry before connect. BleakClient.connect with a bare MAC
+            # tries to use the cached entry and fails with "not found" if the
+            # cache is stale or empty.
+            log.info("alarm pre-scan (10s)...")
+            dev = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            if dev is None:
+                raise RuntimeError(
+                    f"Strap {mac} not found in 10s scan — is it nearby and on body?"
+                )
+            log.info("alarm pre-scan: found %s (%s)", dev.address, dev.name or "?")
+            async with BleakClient(dev, timeout=20.0) as client:
+                if not client.is_connected:
+                    raise RuntimeError("BLE connect returned but not connected")
+                log.info("alarm BLE connected (MTU=%s)",
+                         getattr(client, "mtu_size", "?"))
+                from .client import WHOOP_CHAR_CMD_TO_STRAP
+                class _Shim:
+                    def __init__(self, c):
+                        self._c = c
+                    async def write_cmd(self, data: bytes) -> None:
+                        await self._c.write_gatt_char(
+                            WHOOP_CHAR_CMD_TO_STRAP, data, response=True
+                        )
+                result = await coro_fn(_Shim(client))
+                log.info("alarm op returned: %s", result)
+                return result
         except Exception as e:
             last_err = e
-            # Common bleak error after daemon teardown: "Device ... was not
-            # found" because the device descriptor in BlueZ is stale. A few
-            # seconds + retry usually fixes it.
+            log.warning("alarm attempt %d failed: %s", attempt + 1, e)
             await asyncio.sleep(3.0)
     raise last_err if last_err else RuntimeError("connect failed")
 
