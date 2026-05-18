@@ -952,9 +952,16 @@ async function schedReconcile(){
 const _oldActivate = activateTab;
 activateTab = function(name){
   _oldActivate(name);
-  if(name === 'history'){ refreshHistDays(); loadHistoryDay(); }
+  if(name === 'history'){
+    refreshHistDays().then(() => {
+      // Tab content is now visible; safe to instantiate Chart.js
+      if(document.getElementById('hist_date').value) loadHistoryDay();
+    });
+  }
   if(name === 'alarms'){ refreshSchedules(); }
 };
+// Prime: load just the day list (no charts) so badges show up immediately
+refreshHistDays();
 refreshSchedules();
 </script></body></html>
 """
