@@ -315,7 +315,8 @@ async def main() -> int:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                log.warning("sessão falhou: %s — reconnect em %.1fs", e, backoff)
+                log.warning("sessão falhou: %s [%s] — reconnect em %.1fs",
+                            e, type(e).__name__, backoff)
             if stop.is_set():
                 break
             await asyncio.sleep(backoff)
