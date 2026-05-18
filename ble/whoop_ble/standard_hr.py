@@ -69,6 +69,11 @@ def parse_hr_measurement(data: bytes) -> Optional[HrSample]:
 
 
 def save_sample(conn, sample: HrSample) -> None:
+    # Defensive filter: HR=0, 65535 etc. show up when a non-HR notify lands
+    # in the same handler (e.g. shared char). Drop physiologically impossible
+    # values at the storage boundary so the dashboard always sees clean data.
+    if not (25 <= sample.bpm <= 220):
+        return
     conn.execute(
         "INSERT INTO ble_hr_standard (ts, bpm, rr_ms_json, source, raw_hex) VALUES (?, ?, ?, ?, ?)",
         (sample.ts, sample.bpm, sample.rr_json(), "standard_gatt", sample.raw_hex),

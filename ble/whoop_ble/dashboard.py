@@ -1677,7 +1677,9 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(str(DB))
 
             hr_rows = conn.execute(
-                "SELECT ts, bpm FROM ble_hr_standard WHERE ts >= ? ORDER BY ts ASC",
+                "SELECT ts, bpm FROM ble_hr_standard "
+                "WHERE ts >= ? AND bpm BETWEEN 25 AND 220 "
+                "ORDER BY ts ASC",
                 (now - window,),
             ).fetchall()
 
