@@ -1383,19 +1383,15 @@ class Handler(BaseHTTPRequestHandler):
                 "  json_extract(value_json,'$.battery_percent'), "
                 "  json_extract(value_json,'$.battery_voltage_mv') "
                 "FROM ble_events_v2 WHERE event_name='BATTERY_LEVEL' "
-                "  AND json_extract(value_json,'$.battery_voltage_mv') BETWEEN 3000 AND 4350 "
-                "ORDER BY device_ts DESC LIMIT 5"
-            ).fetchall()
+                "  AND json_extract(value_json,'$.battery_percent') IS NOT NULL "
+                "ORDER BY device_ts DESC LIMIT 1"
+            ).fetchone()
             if bat_rows:
-                vs = sorted(r[2] for r in bat_rows)
-                mid_mv = vs[len(vs) // 2]
-                if mid_mv >= 4200: pct = 100
-                elif mid_mv >= 4100: pct = 80 + int((mid_mv - 4100) * 20 / 100)
-                elif mid_mv >= 3900: pct = 40 + int((mid_mv - 3900) * 40 / 200)
-                elif mid_mv >= 3700: pct = 10 + int((mid_mv - 3700) * 30 / 200)
-                elif mid_mv >= 3300: pct = int((mid_mv - 3300) * 10 / 400)
-                else: pct = 0
-                battery = {"ts": bat_rows[0][0], "percent": pct, "voltage_mv": mid_mv}
+                battery = {
+                    "ts": bat_rows[0],
+                    "percent": bat_rows[1],
+                    "voltage_mv": bat_rows[2],
+                }
             else:
                 battery = None
 
