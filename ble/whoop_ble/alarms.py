@@ -21,6 +21,7 @@ from .commands import (
     cmd_get_alarm_time,
     cmd_run_alarm,
     cmd_disable_alarm,
+    cmd_run_haptic_pattern_maverick,
 )
 
 
@@ -63,7 +64,7 @@ async def _with_strap(coro_fn):
                     f"Strap {mac} not found in 10s scan — is it nearby and on body?"
                 )
             log.info("alarm pre-scan: found %s (%s)", dev.address, dev.name or "?")
-            async with BleakClient(dev, timeout=20.0) as client:
+            async with BleakClient(dev, timeout=45.0) as client:
                 if not client.is_connected:
                     raise RuntimeError("BLE connect returned but not connected")
                 log.info("alarm BLE connected (MTU=%s)",
@@ -77,6 +78,11 @@ async def _with_strap(coro_fn):
                             WHOOP_CHAR_CMD_TO_STRAP, data, response=True
                         )
                 result = await coro_fn(_Shim(client))
+                # Hold the connection open for a couple of seconds so the
+                # strap actually executes the command before we close. The
+                # firmware processes write-with-response asynchronously and
+                # disconnecting too quickly aborts the haptic / alarm op.
+                await asyncio.sleep(2.5)
                 log.info("alarm op returned: %s", result)
                 return result
         except Exception as e:
@@ -113,10 +119,22 @@ async def disable_alarm(alarm_index: int = 0xFF) -> dict:
 
 
 async def run_alarm_now(alarm_index: int = 0) -> dict:
-    """Fire the configured alarm on slot ``alarm_index`` immediately."""
+    """Fire an instant haptic buzz on the strap.
+
+    The Whoop firmware's RUN_ALARM command only works when an alarm has
+    been previously SET on that slot; if the slot is empty it silently
+    no-ops. For a reliable 'Test buzz' we use RUN_HAPTIC_PATTERN_MAVERICK
+    (cmd 19) which fires the haptic motor immediately regardless of any
+    stored alarm. This matches what the official app's test-buzz button
+    does.
+    """
     async def _do(c):
+        # 1. Instant haptic — always works, gives immediate feedback.
+        await c.write_cmd(cmd_run_haptic_pattern_maverick())
+        # 2. ALSO send RUN_ALARM in case a real alarm is set on this slot,
+        #    so users can re-trigger their actual configured alarm.
         await c.write_cmd(cmd_run_alarm(alarm_index=alarm_index))
-        return {"ok": True, "alarm_index": alarm_index}
+        return {"ok": True, "alarm_index": alarm_index, "method": "haptic+alarm"}
     return await _with_strap(_do)
 
 

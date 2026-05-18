@@ -177,6 +177,30 @@ def cmd_run_haptics(pattern: int = 1) -> bytes:
     return _enc(Cmd.RUN_HAPTICS_PATTERN, bytes([pattern & 0xFF]))
 
 
+# Maverick instant haptic — what the app uses for the "Test buzz" button.
+# Decoded from APK xg0/h0.java + g0.java:
+#   payload = [rev=1, w1..w8 (each 0-49), loop_u16_LE, overall_loop]
+# Picking strong rumble (49) on all 8 slots with 2 loops gives a noticeable buzz.
+DEFAULT_NOTIFICATION_HAPTIC = bytes([
+    1,                                 # REVISION_1
+    49, 49, 49, 49, 49, 49, 49, 49,    # 8x strong wave-form effect
+    2, 0,                              # loopControlForEffects (u16 LE) = 2
+    1,                                 # overallWaveformLoopControl
+])
+
+
+def cmd_run_haptic_pattern_maverick(payload: bytes | None = None) -> bytes:
+    """Trigger the Maverick haptic pattern immediately (no schedule needed).
+
+    Whoop 5.0 'instant feedback' command — this is what the official
+    app's 'Test buzz' button sends. Default = strong rumble pattern.
+    """
+    p = payload if payload is not None else DEFAULT_NOTIFICATION_HAPTIC
+    if len(p) != 12:
+        raise ValueError(f"haptic must be 12 bytes, got {len(p)}")
+    return _enc(Cmd.RUN_HAPTIC_PATTERN_MAVERICK, p)
+
+
 # Alarms (per xg0/p0.java, xg0/q0.java) — Maverick supports a single alarm
 # stored on the strap that triggers haptics at a given unix timestamp.
 #
