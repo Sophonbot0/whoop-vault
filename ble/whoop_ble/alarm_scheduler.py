@@ -167,7 +167,8 @@ def reconcile_once(db_path: Path, push_fn, _failure_cache: dict | None = None) -
     skipped = 0
     now_s = time.time()
     fc = _failure_cache if _failure_cache is not None else {}
-    BACKOFF_S = 300  # 5 min between retries after a failed push
+    BACKOFF_S = 90  # 1.5 min between retries after a failed push (was 5 min;
+                    # too long when user adds an alarm a few minutes away)
     for idx, hh, mm, mask, enabled, last_ts in rows:
         last_fail = fc.get(idx)
         if last_fail and (now_s - last_fail) < BACKOFF_S:

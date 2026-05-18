@@ -35,7 +35,11 @@ async def _alarm_op(fn, *args):
         log.append("⏸  Stopping daemon (single-client BLE)...")
         stop_res = await pairing.stop_daemon()
         log.extend(stop_res.get("log", []))
-        await asyncio.sleep(1.5)  # give BlueZ time to drop the connection
+        # Give BlueZ time to fully tear down the GATT session AND let the
+        # strap settle into advertising mode again. Too short (≤2s) and
+        # the next BleakClient.connect hits 'br-connection-canceled' or
+        # 'org.bluez.Error.InProgress'.
+        await asyncio.sleep(8.0)
 
     op_result = None
     op_error = None
@@ -138,22 +142,35 @@ def _start_bg_parser():
     return t
 
 
+# Global mutex around every alarm BLE op. The dashboard's _alarm_op
+# (Test buzz / Schedule / Disable) and the alarm-scheduler thread's
+# reconciler both compete for the BlueZ adapter — without this they
+# can collide mid-handshake and produce InProgress / br-connection-
+# canceled / brittle re-pair loops.
+_alarm_global_lock = threading.Lock()
+
+
 def _alarm_push_sync(idx: int, unix_ts: int) -> dict:
     """Synchronous wrapper used by the alarm-scheduler thread to push a
     ``SET_ALARM_TIME`` for a given slot. Reuses ``_alarm_op`` so the
     daemon is paused/restarted around the BLE write.
     """
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(
-            _alarm_op(alarms_mod.set_alarm, unix_ts, idx)
-        )
-    finally:
-        loop.close()
+    with _alarm_global_lock:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                _alarm_op(alarms_mod.set_alarm, unix_ts, idx)
+            )
+        finally:
+            loop.close()
 
 
 def _start_alarm_scheduler():
-    return alarm_sched.start_scheduler_thread(DB, _alarm_push_sync, interval=60.0)
+    # 120s tick is plenty — the reconciler only matters at minute
+    # granularity (it picks the next-fire time aligned to hh:mm), and
+    # cutting it in half from 60→120s halves the chance of colliding
+    # with a user-triggered Test buzz.
+    return alarm_sched.start_scheduler_thread(DB, _alarm_push_sync, interval=120.0)
 
 
 # In-memory log of the last alarm operation (polled by the UI via /api/alarm/status)
@@ -164,22 +181,26 @@ def _alarm_op_threaded(fn, *args):
     """Run an alarm operation in a background thread; UI polls for status."""
     def _runner():
         _alarm_state["running"] = True
-        _alarm_state["log"] = ["Starting..."]
+        _alarm_state["log"] = ["Waiting for alarm lock..."]
         _alarm_state["result"] = None
-        try:
-            loop = asyncio.new_event_loop()
+        # Take the same lock the scheduler thread uses — both contend for
+        # the BlueZ adapter so they must serialize.
+        with _alarm_global_lock:
+            _alarm_state["log"] = ["Starting..."]
             try:
-                result = loop.run_until_complete(_alarm_op(fn, *args))
+                loop = asyncio.new_event_loop()
+                try:
+                    result = loop.run_until_complete(_alarm_op(fn, *args))
+                finally:
+                    loop.close()
+                _alarm_state["log"] = result.get("log", [])
+                _alarm_state["result"] = result
+            except Exception as e:
+                import traceback
+                _alarm_state["log"] = [f"ERROR: {e}", traceback.format_exc()[-400:]]
+                _alarm_state["result"] = {"ok": False, "error": str(e)}
             finally:
-                loop.close()
-            _alarm_state["log"] = result.get("log", [])
-            _alarm_state["result"] = result
-        except Exception as e:
-            import traceback
-            _alarm_state["log"] = [f"ERROR: {e}", traceback.format_exc()[-400:]]
-            _alarm_state["result"] = {"ok": False, "error": str(e)}
-        finally:
-            _alarm_state["running"] = False
+                _alarm_state["running"] = False
 
     t = threading.Thread(target=_runner, daemon=True, name="alarm_op")
     t.start()
