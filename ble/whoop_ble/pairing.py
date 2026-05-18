@@ -108,7 +108,18 @@ async def scan_for_whoop(scan_seconds: float = 10.0) -> Optional[str]:
     # 1) Try bleak first — fast, deterministic timeout, sees Maverick adv data.
     try:
         from bleak import BleakScanner
-        devices = await BleakScanner.discover(timeout=scan_seconds, scanning_mode="active")
+        try:
+            devices = await BleakScanner.discover(
+                timeout=scan_seconds, scanning_mode="active"
+            )
+        finally:
+            # Defensive: make sure the BlueZ adapter is not left in discovery
+            # mode (otherwise subsequent connect() calls fail with
+            # org.bluez.Error.InProgress).
+            try:
+                await _bluetoothctl("scan off", timeout=3.0)
+            except Exception:
+                pass
         for d in devices:
             name = (d.name or "") or ""
             if "WHOOP" in name.upper():
