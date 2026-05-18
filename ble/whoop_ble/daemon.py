@@ -188,6 +188,16 @@ async def run_session(mac: str, conn) -> None:
         # Step F: high-freq sync mode (might unlock real-time streams)
         await safe_write(cmd_enter_high_freq_sync(), "ENTER_HIGH_FREQ_SYNC")
 
+        # Step G: shorten the BLE connection interval. The strap defaults
+        # to ~240 ms which caps notification throughput at ~4 frames/s.
+        # 15 ms is the lowest interval the firmware reliably accepts and
+        # roughly triples the historical-drain rate.
+        try:
+            from .conn_tuning import set_conn_interval
+            set_conn_interval(mac, interval_ms=15.0)
+        except Exception as e:
+            log.debug("conn-tuning skipped: %s", e)
+
         log.info("=== STREAMING (Ctrl+C para parar) ===")
 
         # ---------- 3. loops periódicos ----------
