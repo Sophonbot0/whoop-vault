@@ -277,6 +277,28 @@ HTML = """<!doctype html>
   .badge.ok{background:#1a3a1a;color:#3eff8b}
   .badge.warn{background:#3a3a1a;color:#ffd13e}
   .badge.err{background:#3a1a1a;color:#ff6b6b}
+  .al-day{display:inline-block;padding:8px 14px;background:#0a0d12;border:1px solid var(--grid);
+          border-radius:6px;color:var(--mute);cursor:pointer;font-size:12px;
+          font-weight:500;letter-spacing:1px;text-transform:uppercase;user-select:none}
+  .al-day.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .al-card{background:var(--card);border-radius:10px;padding:18px;position:relative;
+           border:1px solid var(--grid);transition:transform .1s,border-color .15s}
+  .al-card.empty{border-style:dashed;cursor:pointer;color:var(--mute)}
+  .al-card.empty:hover{border-color:var(--accent);color:var(--accent);transform:translateY(-1px)}
+  .al-card.active{border-color:var(--accent)}
+  .al-card.disabled{opacity:0.5}
+  .al-card .time{font-size:42px;font-weight:200;color:var(--accent);letter-spacing:1px;line-height:1}
+  .al-card .name{font-size:14px;margin-top:6px;color:var(--text)}
+  .al-card .days{margin-top:10px;display:flex;gap:4px;flex-wrap:wrap}
+  .al-card .day-pill{font-size:9px;letter-spacing:1px;padding:2px 6px;border-radius:3px;
+                     background:#0a0d12;color:var(--mute);text-transform:uppercase}
+  .al-card .day-pill.on{background:var(--accent);color:#fff}
+  .al-card .nextfire{font-size:11px;color:var(--mute);margin-top:10px}
+  .al-card .actions{position:absolute;top:14px;right:14px;display:flex;gap:6px;opacity:0;transition:opacity .15s}
+  .al-card:hover .actions{opacity:1}
+  .al-card .actions button{padding:4px 8px;font-size:10px;letter-spacing:.5px}
+  #al_log{font-size:11px;color:#aaa;max-height:200px;overflow:auto;line-height:1.6;
+          font-family:'SF Mono','Monaco',monospace;white-space:pre-wrap}
 </style></head><body>
 
 <h1>WHOOP VAULT</h1>
@@ -483,68 +505,72 @@ HTML = """<!doctype html>
 
 <div class="tab-content" id="tab-alarms">
   <h2>Alarms</h2>
-  <div class="card">
-    <div class="meta">The strap has a built-in single alarm slot that buzzes
-    at a given time, even when disconnected from BLE. The dashboard
-    auto-pauses the data daemon, sends the command, and restarts the
-    daemon — no data is lost, the historical drain resumes from where it
-    left off (every chunk is keyed by <code>record_id</code> and dedup is
-    automatic).</div>
-    <div class="stat" style="margin-top:14px">
-      <span class="stat-label">Current alarm (from last event)</span>
-      <span class="stat-value" id="alarm_current">—</span></div>
-    <div class="btn-row" style="margin-top:16px">
-      <input id="alarm_time" type="datetime-local"
-             style="flex:1;padding:12px;background:#0a0d12;border:1px solid var(--grid);
-             border-radius:8px;color:var(--text);font-family:monospace;font-size:13px"/>
-      <button class="btn" onclick="doSetAlarm()">Schedule</button>
+
+  <!-- ───── Status card ───── -->
+  <div class="card" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+    <div style="flex:1;min-width:240px">
+      <div class="label">Strap</div>
+      <div style="font-size:18px;font-weight:300" id="al_strap_state">—</div>
+      <div class="meta" id="al_last_event">no alarm fired yet</div>
     </div>
-    <div class="btn-row">
-      <button class="btn secondary" onclick="doGetAlarm()">Read current</button>
-      <button class="btn secondary" onclick="doRunAlarm()">Trigger now (test buzz)</button>
-      <button class="btn danger" onclick="doDisableAlarm()">Clear alarm</button>
+    <div style="flex:1;min-width:240px">
+      <div class="label">Slots discovered</div>
+      <div style="font-size:18px;font-weight:300"><span id="al_slot_count">—</span>
+        <span class="meta" style="font-size:11px">(<a href="#" onclick="alProbe();return false" style="color:var(--accent)">probe again</a>)</span>
+      </div>
+      <div class="meta">Whoop firmware exposes one timestamp per slot; we re-program them daily for weekday repeats.</div>
+    </div>
+    <div>
+      <button class="btn" onclick="alOpenEditor(null)">+ New alarm</button>
+      <button class="btn secondary" onclick="alTestBuzz()" title="Make the strap buzz right now">Test buzz</button>
     </div>
   </div>
-  <div class="pair-log" id="pair_log_alarms" style="margin-top:16px">Ready.</div>
 
-  <h2>Recurring schedules</h2>
-  <div class="card">
-    <div class="meta">The strap firmware accepts a single absolute timestamp per
-    <code>alarm_index</code> slot. Weekday repeats are managed locally — a
-    background reconciler runs every minute and re-programs the strap with
-    the next matching datetime as days roll forward. Multi-slot support
-    depends on the firmware (use the <em>Probe slots</em> button below to
-    discover how many your strap accepts; slot 0 is always safe).</div>
+  <!-- ───── Alarm cards ───── -->
+  <div id="al_cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:14px"></div>
 
-    <div id="sched_list" style="margin-top:18px"></div>
-
-    <h3 style="color:var(--mute);font-size:13px;text-transform:uppercase;letter-spacing:1.5px;margin-top:22px">Add / edit schedule</h3>
-    <div class="btn-row" style="margin-top:8px;align-items:center">
-      <label class="meta">Slot</label>
-      <input id="s_idx" type="number" min="0" max="15" value="0" style="width:60px;padding:8px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text);font-family:monospace"/>
-      <label class="meta">Label</label>
-      <input id="s_label" placeholder="Wake-up" style="flex:1;padding:8px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text)"/>
+  <!-- ───── Editor (collapsed) ───── -->
+  <div class="card" id="al_editor" style="margin-top:14px;display:none">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px">
+      <h3 style="margin:0;font-size:15px;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent)" id="al_editor_title">New alarm</h3>
+      <span class="meta">slot <span id="al_editor_slot">0</span></span>
+    </div>
+    <div class="btn-row" style="align-items:center">
+      <label class="meta" style="min-width:60px">Name</label>
+      <input id="al_name" placeholder="Wake-up" style="flex:1;padding:10px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text)"/>
       <label class="meta">Time</label>
-      <input id="s_time" type="time" value="07:00" style="padding:8px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text);font-family:monospace"/>
+      <input id="al_time" type="time" value="07:00" style="padding:10px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text);font-family:monospace;font-size:15px"/>
     </div>
-    <div class="btn-row" style="margin-top:10px;align-items:center">
-      <label class="meta" style="margin-right:6px">Repeat on:</label>
-      <span id="s_days" style="display:flex;gap:6px">
-        <label class="badge" data-d="0" style="cursor:pointer">Mon</label>
-        <label class="badge" data-d="1" style="cursor:pointer">Tue</label>
-        <label class="badge" data-d="2" style="cursor:pointer">Wed</label>
-        <label class="badge" data-d="3" style="cursor:pointer">Thu</label>
-        <label class="badge" data-d="4" style="cursor:pointer">Fri</label>
-        <label class="badge" data-d="5" style="cursor:pointer">Sat</label>
-        <label class="badge" data-d="6" style="cursor:pointer">Sun</label>
-      </span>
+    <div style="margin-top:14px">
+      <label class="meta" style="display:block;margin-bottom:8px">Repeat on (leave all empty = every day)</label>
+      <div id="al_days" style="display:flex;gap:8px;flex-wrap:wrap">
+        <label class="al-day" data-d="0">Mon</label>
+        <label class="al-day" data-d="1">Tue</label>
+        <label class="al-day" data-d="2">Wed</label>
+        <label class="al-day" data-d="3">Thu</label>
+        <label class="al-day" data-d="4">Fri</label>
+        <label class="al-day" data-d="5">Sat</label>
+        <label class="al-day" data-d="6">Sun</label>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn secondary" style="padding:6px 12px;font-size:11px" onclick="alPreset('weekdays')">Weekdays</button>
+        <button class="btn secondary" style="padding:6px 12px;font-size:11px" onclick="alPreset('weekend')">Weekend</button>
+        <button class="btn secondary" style="padding:6px 12px;font-size:11px" onclick="alPreset('all')">Every day</button>
+        <button class="btn secondary" style="padding:6px 12px;font-size:11px" onclick="alPreset('clear')">Once</button>
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:18px">
+      <button class="btn" onclick="alSave()">Save &amp; program strap</button>
+      <button class="btn secondary" onclick="alCloseEditor()">Cancel</button>
       <span style="flex:1"></span>
-      <label class="meta"><input id="s_enabled" type="checkbox" checked/> enabled</label>
+      <span class="meta" id="al_next_preview">—</span>
     </div>
-    <div class="btn-row" style="margin-top:14px">
-      <button class="btn" onclick="schedUpsert()">Save schedule</button>
-      <button class="btn secondary" onclick="schedReconcile()">Reconcile now</button>
-    </div>
+  </div>
+
+  <!-- ───── Activity log ───── -->
+  <div class="card" style="margin-top:14px">
+    <div class="label">Activity</div>
+    <pre id="al_log" style="margin-top:8px">Ready.</pre>
   </div>
 </div><!-- /tab-alarms -->
 <script>
@@ -984,84 +1010,256 @@ async function loadHistoryDay(dateStr){
   }
 }
 
-// ============ Schedules ============
-function getSelectedMask(){
+// ============ Alarms ============
+const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const alState = {
+  slots: 1,           // max alarm slots discovered (default 1 until probed)
+  editing: null,      // {idx, label, hh, mm, weekday_mask, enabled, isNew}
+  schedules: [],
+};
+
+function alLog(msg){
+  const el = document.getElementById('al_log');
+  if(!el) return;
+  const ts = new Date().toLocaleTimeString();
+  el.textContent = (ts + '  ' + msg + '\\n' + el.textContent).slice(0, 4000);
+}
+
+function alGetMaskFromEditor(){
   let m = 0;
-  document.querySelectorAll('#s_days .badge').forEach(b => {
-    if(b.classList.contains('ok')) m |= (1 << parseInt(b.dataset.d));
+  document.querySelectorAll('#al_days .al-day').forEach(b => {
+    if(b.classList.contains('on')) m |= (1 << parseInt(b.dataset.d));
   });
   return m;
 }
-function setSelectedMask(m){
-  document.querySelectorAll('#s_days .badge').forEach(b => {
+function alSetMaskInEditor(m){
+  document.querySelectorAll('#al_days .al-day').forEach(b => {
     const bit = parseInt(b.dataset.d);
-    if(m & (1 << bit)) b.classList.add('ok'); else b.classList.remove('ok');
+    if(m & (1 << bit)) b.classList.add('on'); else b.classList.remove('on');
   });
 }
-document.querySelectorAll('#s_days .badge').forEach(b => {
-  b.onclick = () => b.classList.toggle('ok');
+function alPreset(kind){
+  const m = {weekdays: 31, weekend: 96, all: 127, clear: 0}[kind] || 0;
+  alSetMaskInEditor(m);
+  alUpdateNextPreview();
+}
+
+function alOpenEditor(sched){
+  // sched = null → new alarm; otherwise edit existing
+  let nextFreeIdx = 0;
+  const used = new Set(alState.schedules.map(s => s.idx));
+  while(used.has(nextFreeIdx) && nextFreeIdx < alState.slots) nextFreeIdx++;
+  if(!sched && nextFreeIdx >= alState.slots){
+    alLog('All ' + alState.slots + ' alarm slots are used. Delete one first.');
+    return;
+  }
+  alState.editing = sched ? {...sched, isNew: false}
+                          : {idx: nextFreeIdx, label: '', hh: 7, mm: 0,
+                             weekday_mask: 31, enabled: true, isNew: true};
+  document.getElementById('al_editor').style.display = 'block';
+  document.getElementById('al_editor_title').textContent =
+    alState.editing.isNew ? 'New alarm' : 'Edit alarm';
+  document.getElementById('al_editor_slot').textContent = alState.editing.idx;
+  document.getElementById('al_name').value = alState.editing.label || '';
+  document.getElementById('al_time').value =
+    String(alState.editing.hh).padStart(2,'0') + ':' +
+    String(alState.editing.mm).padStart(2,'0');
+  alSetMaskInEditor(alState.editing.weekday_mask);
+  alUpdateNextPreview();
+  document.getElementById('al_editor').scrollIntoView({behavior:'smooth',block:'center'});
+}
+function alCloseEditor(){
+  alState.editing = null;
+  document.getElementById('al_editor').style.display = 'none';
+}
+
+function alComputeNext(hh, mm, mask){
+  // Mirror of next_fire_ts() in Python (local tz).
+  const now = new Date();
+  if(mask === 0){
+    const c = new Date(now); c.setHours(hh, mm, 0, 0);
+    if(c <= now) c.setDate(c.getDate()+1);
+    return c;
+  }
+  for(let off=0; off<8; off++){
+    const d = new Date(now); d.setDate(d.getDate()+off);
+    const py_wd = (d.getDay()+6) % 7;
+    if(!(mask & (1<<py_wd))) continue;
+    const c = new Date(d); c.setHours(hh, mm, 0, 0);
+    if(c <= now) continue;
+    return c;
+  }
+  return null;
+}
+function alFormatRelative(d){
+  if(!d) return '—';
+  const diff = (d - new Date()) / 1000;
+  if(diff < 60) return 'in <1 min';
+  if(diff < 3600) return 'in ' + Math.round(diff/60) + ' min';
+  if(diff < 86400) return 'in ' + Math.round(diff/3600) + ' h';
+  return 'in ' + Math.round(diff/86400) + ' days';
+}
+function alUpdateNextPreview(){
+  if(!alState.editing){ return; }
+  const t = document.getElementById('al_time').value || '07:00';
+  const [hh, mm] = t.split(':').map(Number);
+  const mask = alGetMaskFromEditor();
+  const next = alComputeNext(hh, mm, mask);
+  const el = document.getElementById('al_next_preview');
+  if(next){
+    el.textContent = 'next: ' + next.toLocaleString() + '  · ' + alFormatRelative(next);
+  } else {
+    el.textContent = '—';
+  }
+}
+document.addEventListener('input', e => {
+  if(e.target && (e.target.id === 'al_time' || e.target.id === 'al_name')) alUpdateNextPreview();
 });
-async function refreshSchedules(){
-  try{
-    const r = await (await fetch('/api/schedules')).json();
-    const box = document.getElementById('sched_list');
-    if(!r.schedules || !r.schedules.length){
-      box.innerHTML = '<div class="meta">No recurring schedules yet.</div>';
-      return;
-    }
-    box.innerHTML = r.schedules.map(s => {
-      const days = (s.weekdays && s.weekdays.length) ? s.weekdays.join(' ') : 'every day';
-      const nextIso = s.last_scheduled_iso || '—';
-      const cls = s.enabled ? 'ok' : 'warn';
-      return '<div class="stat"><span class="stat-label">'
-        + '<span class="badge ' + cls + '">slot ' + s.idx + '</span> '
-        + (s.label || '(no label)')
-        + ' · ' + String(s.hh).padStart(2,'0') + ':' + String(s.mm).padStart(2,'0')
-        + ' · ' + days + '</span>'
-        + '<span class="stat-value">next: ' + nextIso
-        + ' <button class="btn secondary" style="padding:6px 10px;font-size:11px;margin-left:8px" onclick="schedEdit(' + s.idx + ',' + JSON.stringify(s.label).replace(/"/g,'&quot;') + ',' + s.hh + ',' + s.mm + ',' + s.weekday_mask + ',' + (s.enabled?1:0) + ')">edit</button>'
-        + ' <button class="btn danger" style="padding:6px 10px;font-size:11px" onclick="schedDel(' + s.idx + ')">delete</button>'
-        + '</span></div>';
-    }).join('');
-  }catch(e){ console.error(e); }
-}
-function schedEdit(idx, label, hh, mm, mask, enabled){
-  document.getElementById('s_idx').value = idx;
-  document.getElementById('s_label').value = label;
-  document.getElementById('s_time').value =
-    String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
-  setSelectedMask(mask);
-  document.getElementById('s_enabled').checked = !!enabled;
-}
-async function schedUpsert(){
-  const t = document.getElementById('s_time').value || '07:00';
+
+async function alSave(){
+  if(!alState.editing) return;
+  const t = document.getElementById('al_time').value || '07:00';
   const [hh, mm] = t.split(':').map(Number);
   const body = {
-    idx: parseInt(document.getElementById('s_idx').value) || 0,
-    label: document.getElementById('s_label').value || '',
+    idx: alState.editing.idx,
+    label: document.getElementById('al_name').value.trim() || ('Alarm ' + (alState.editing.idx + 1)),
     hh, mm,
-    weekday_mask: getSelectedMask(),
-    enabled: document.getElementById('s_enabled').checked,
+    weekday_mask: alGetMaskFromEditor(),
+    enabled: true,
   };
+  alLog('Saving alarm "' + body.label + '" @ ' + String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0'));
   const r = await fetch('/api/schedule/upsert',
     {method:'POST', headers:{'Content-Type':'application/json'},
      body: JSON.stringify(body)});
   const j = await r.json();
-  appendLog('schedule upsert: ' + JSON.stringify(j));
-  refreshSchedules();
+  if(!j.ok){ alLog('  ✗ ' + (j.error || 'save failed')); return; }
+  alLog('  ✓ saved — pushing to strap on next reconcile (≤60s)');
+  alCloseEditor();
+  await alRefresh();
+  // Trigger immediate reconcile so the user sees the strap update right away
+  fetch('/api/schedule/reconcile', {method:'POST'}).catch(()=>{});
 }
-async function schedDel(idx){
-  if(!confirm('Delete slot ' + idx + '?')) return;
-  await fetch('/api/schedule/delete',
+
+async function alDelete(idx){
+  if(!confirm('Delete this alarm?')) return;
+  alLog('Deleting slot ' + idx + '...');
+  const r = await fetch('/api/schedule/delete',
     {method:'POST', headers:{'Content-Type':'application/json'},
      body: JSON.stringify({idx})});
-  refreshSchedules();
+  const j = await r.json();
+  if(!j.ok){ alLog('  ✗ delete failed'); return; }
+  alLog('  ✓ deleted (strap still has last program until cleared via Test buzz / next reconcile)');
+  await alRefresh();
+  // Also clear the strap-side alarm if this was slot 0
+  if(idx === 0){
+    fetch('/api/alarm/disable', {method:'POST'}).catch(()=>{});
+  }
 }
-async function schedReconcile(){
-  appendLog('Reconciling now...');
-  await fetch('/api/schedule/reconcile', {method:'POST'});
-  setTimeout(refreshSchedules, 2000);
+
+async function alTestBuzz(){
+  alLog('Triggering test buzz...');
+  const r = await fetch('/api/alarm/run', {method:'POST'});
+  const j = await r.json();
+  if(j.ok){
+    alLog('  ✓ command sent — strap will buzz with the haptic pattern');
+    alPollAlarmOp();
+  } else {
+    alLog('  ✗ ' + (j.error || 'failed'));
+  }
 }
+
+async function alProbe(){
+  alLog('Probing alarm slots (this will briefly stop the daemon)...');
+  try{
+    const r = await fetch('/api/alarm/probe', {method:'POST'});
+    const j = await r.json();
+    if(j.ok){
+      alState.slots = j.max_slots || 1;
+      document.getElementById('al_slot_count').textContent = alState.slots;
+      alLog('  ✓ strap accepts ' + alState.slots + ' alarm slot(s)');
+      alRenderCards();
+    } else {
+      alLog('  ✗ probe failed: ' + (j.error || ''));
+    }
+  }catch(e){
+    alLog('  ✗ probe error: ' + e);
+  }
+}
+
+async function alPollAlarmOp(){
+  for(let i=0; i<10; i++){
+    await new Promise(r => setTimeout(r, 1500));
+    try{
+      const s = await (await fetch('/api/alarm/status')).json();
+      if(!s.running){
+        if(s.log && s.log.length){
+          alLog('  → ' + s.log[s.log.length-1]);
+        }
+        return;
+      }
+    }catch(e){}
+  }
+}
+
+function alRenderCards(){
+  const box = document.getElementById('al_cards');
+  const byIdx = {};
+  alState.schedules.forEach(s => { byIdx[s.idx] = s; });
+  let html = '';
+  for(let i=0; i<alState.slots; i++){
+    const s = byIdx[i];
+    if(!s){
+      html += '<div class="al-card empty" onclick="alOpenEditor(null)">'
+            + '<div style="font-size:14px;padding:30px 0;text-align:center">'
+            + '+ Add alarm<br><span style="font-size:11px;color:#444">slot ' + i + '</span>'
+            + '</div></div>';
+    } else {
+      const cls = 'active' + (s.enabled ? '' : ' disabled');
+      const next = alComputeNext(s.hh, s.mm, s.weekday_mask);
+      const days = s.weekday_mask
+        ? DAY_NAMES.map((n,b) => '<span class="day-pill' + ((s.weekday_mask & (1<<b)) ? ' on' : '') + '">' + n + '</span>').join('')
+        : '<span class="day-pill on">EVERY DAY</span>';
+      html += '<div class="al-card ' + cls + '">'
+            + '<div class="actions">'
+            + '<button class="btn secondary" onclick="alOpenEditor(' + JSON.stringify(s).replace(/"/g,'&quot;') + ')">Edit</button>'
+            + '<button class="btn danger" onclick="alDelete(' + s.idx + ')">Delete</button>'
+            + '</div>'
+            + '<div class="time">' + String(s.hh).padStart(2,'0') + ':' + String(s.mm).padStart(2,'0') + '</div>'
+            + '<div class="name">' + (s.label || 'Alarm ' + (s.idx+1)) + '</div>'
+            + '<div class="days">' + days + '</div>'
+            + '<div class="nextfire">' + (next ? 'Next: ' + next.toLocaleString() + ' · ' + alFormatRelative(next) : '—') + '</div>'
+            + '</div>';
+    }
+  }
+  box.innerHTML = html;
+}
+
+async function alRefresh(){
+  try{
+    const [schedR, statusR] = await Promise.all([
+      fetch('/api/schedules').then(r=>r.json()),
+      fetch('/api/status').then(r=>r.json()),
+    ]);
+    alState.schedules = schedR.schedules || [];
+    // Connection state
+    const stateEl = document.getElementById('al_strap_state');
+    if(statusR.daemon_running){
+      stateEl.innerHTML = '<span class="badge ok">connected</span> daemon PID ' + statusR.daemon_pid;
+    } else {
+      stateEl.innerHTML = '<span class="badge warn">daemon stopped</span>';
+    }
+    if(statusR.alarm){
+      document.getElementById('al_last_event').textContent =
+        'last fired alarm at ' + statusR.alarm.iso + ' (slot ' + statusR.alarm.alarm_index + ')';
+    }
+    document.getElementById('al_slot_count').textContent = alState.slots;
+    alRenderCards();
+  }catch(e){ console.error(e); }
+}
+
+document.querySelectorAll('#al_days .al-day').forEach(b => {
+  b.onclick = () => { b.classList.toggle('on'); alUpdateNextPreview(); };
+});
 
 // Wire up tab-switch hooks
 const _oldActivate = activateTab;
@@ -1069,15 +1267,16 @@ activateTab = function(name){
   _oldActivate(name);
   if(name === 'history'){
     refreshHistDays().then(() => {
-      // When tab becomes visible, charts can be created safely
       if(histState.selected) loadHistoryDay();
     });
   }
-  if(name === 'alarms'){ refreshSchedules(); }
+  if(name === 'alarms'){ alRefresh(); }
 };
-// Prime: load day list so the calendar shows highlights immediately
+// Prime
 refreshHistDays();
-refreshSchedules();
+alRefresh();
+// Refresh alarm cards every 30s to keep "next fire" relative time fresh
+setInterval(() => { if(document.getElementById('tab-alarms').classList.contains('active')) alRefresh(); }, 30000);
 </script></body></html>
 """
 
@@ -1512,15 +1711,24 @@ class Handler(BaseHTTPRequestHandler):
             hr = [{"ts": r[0], "bpm": r[1]} for r in hr_rows]
             temp = [{"ts": r[0], "temp": r[1]} for r in temp_rows if r[1] is not None]
             imu = [{"ts": r[0], "mag": r[1]} for r in imu_rows if r[1] is not None]
-            # Insert null gaps so the chart line breaks during data dropouts
+            # Insert null gaps so the chart line breaks during data dropouts,
+            # and also append a trailing null at "now" if the last sample is
+            # already stale — that way removing the strap shows up immediately
+            # as a flat-line break rather than a frozen last value.
             def _gaps(s, key, max_gap_s=15.0):
-                if len(s) < 2:
+                if not s:
                     return s
                 out = [s[0]]
                 for prev, cur in zip(s, s[1:]):
                     if cur["ts"] - prev["ts"] > max_gap_s:
                         out.append({"ts": prev["ts"] + 1, key: None})
                     out.append(cur)
+                # Trailing-null heuristic: if the newest sample is older
+                # than the gap threshold compared to "now", append a null
+                # so Chart.js renders the missing tail as a gap.
+                if now - out[-1]["ts"] > max_gap_s:
+                    out.append({"ts": out[-1]["ts"] + 1, key: None})
+                    out.append({"ts": now, key: None})
                 return out
             hr = _gaps(hr, "bpm", 10.0)        # live HR ~1Hz, break if >10s
             temp = _gaps(temp, "temp", 120.0)  # K18 every ~10-30s
