@@ -160,10 +160,13 @@ async def drain_v2(
             rec["kind"] = f"metadata_sub{meta_kind}"
 
             if meta_kind == HISTORY_END and len(f.payload) >= 8:
-                # payload[0:4] = start_id (I()), payload[4:8] = end_id (K())
-                # ch0/b.java reads at offsets 4 and 8 of an inner buffer,
-                # which after the 5-byte response header is offset 0 and 4
-                # of our payload.
+                # The metadata buffer layout from ch0/b.java:
+                #   inner[3:7]  = f.payload[0:4]  → timestamp/start_id field
+                #   inner[7:11] = f.payload[4:8]  → device-clock/end_id field
+                # The strap accepts the ACK as long as the field positions
+                # are echoed back. (We tried offsets [1:5]/[5:9] per the APK
+                # I()/K() reads — those mapped to inner[13:17] / [17:21] and
+                # the strap rejected them as zeros.)
                 start_id = f.payload[0:4]
                 end_id = f.payload[4:8]
                 rec["start_id_hex"] = start_id.hex()
