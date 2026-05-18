@@ -1358,6 +1358,63 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "alarm op already running"})
             _alarm_op_threaded(alarms_mod.run_alarm_now)
             return self._json({"ok": True, "started": True, "poll": "/api/alarm/status"})
+        if u.path == "/api/alarm/probe":
+            # Empirically discover how many alarm slots the firmware accepts.
+            # Pushes SET_ALARM_TIME(idx=0..N) with a far-future ts, watches
+            # for the first failure. Slot 0 is always assumed valid.
+            def _probe():
+                _alarm_state["running"] = True
+                _alarm_state["log"] = ["Probing alarm slots..."]
+                _alarm_state["result"] = None
+                max_ok = 1
+                try:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        for idx in range(8):
+                            far_ts = int(time.time()) + 365 * 24 * 3600 + idx
+                            res = loop.run_until_complete(
+                                _alarm_op(alarms_mod.set_alarm, far_ts, idx)
+                            )
+                            ok = bool(res.get("ok"))
+                            _alarm_state["log"].append(
+                                f"slot {idx}: {'OK' if ok else 'rejected'}"
+                            )
+                            if not ok:
+                                max_ok = idx
+                                break
+                            max_ok = idx + 1
+                        # Clear the test alarm we just set on the last good slot
+                        try:
+                            loop.run_until_complete(
+                                _alarm_op(alarms_mod.disable_alarm)
+                            )
+                        except Exception:
+                            pass
+                    finally:
+                        loop.close()
+                    _alarm_state["result"] = {"ok": True, "max_slots": max_ok}
+                    _alarm_state["log"].append(f"→ {max_ok} slot(s) supported")
+                except Exception as e:
+                    _alarm_state["result"] = {"ok": False, "error": str(e)}
+                    _alarm_state["log"].append(f"ERROR: {e}")
+                finally:
+                    _alarm_state["running"] = False
+            if _alarm_state["running"]:
+                return self._json({"ok": False, "error": "alarm op already running"})
+            threading.Thread(target=_probe, daemon=True, name="alarm_probe").start()
+            # Wait briefly so the caller can read max_slots; if it takes too
+            # long the UI will fall back to polling /api/alarm/status.
+            for _ in range(120):  # up to ~60s
+                time.sleep(0.5)
+                if not _alarm_state["running"]:
+                    break
+            result = _alarm_state.get("result") or {}
+            return self._json({
+                "ok": bool(result.get("ok")),
+                "max_slots": result.get("max_slots", 1),
+                "error": result.get("error"),
+                "log": _alarm_state.get("log", []),
+            })
         if u.path == "/api/schedule/upsert":
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length).decode()) if length else {}
