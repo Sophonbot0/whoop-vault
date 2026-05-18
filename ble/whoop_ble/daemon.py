@@ -246,7 +246,14 @@ async def run_session(mac: str, conn) -> None:
                 last_historical = now
                 try:
                     log.info("→ SEND_HISTORICAL_DATA (drain)")
-                    await drain_v2(client, conn, idle_timeout=60.0, max_chunks=100000)
+                    stats = await drain_v2(client, conn, idle_timeout=15.0, max_chunks=100000)
+                    # Continuous-drain: if the strap still had chunks flowing
+                    # when the drain returned (no HISTORY_COMPLETE), don't
+                    # wait the full HISTORICAL_INTERVAL_S — retrigger ASAP.
+                    if stats and stats.get("chunks", 0) >= 1000 and not stats.get("complete"):
+                        log.info("backlog likely (%d chunks, not complete) → drain again soon",
+                                 stats["chunks"])
+                        last_historical = now - HISTORICAL_INTERVAL_S + 5.0
                 except Exception as e:
                     log.exception("drain falhou: %s", e)
 
