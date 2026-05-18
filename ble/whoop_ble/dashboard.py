@@ -1189,13 +1189,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "bad date"}, code=400)
         day_end = day_start + 86400
 
-        # K18 series, downsampled by minute
+        # K18 series — m_byte14 is the heart rate (cross-validated against
+        # ble_hr_standard: per-day avg matches sleep/wake HR profile)
         rows = conn.execute(
             "SELECT ts, "
             " json_extract(value_json,'$.skin_temp_hp_c'), "
             " json_extract(value_json,'$.motion'), "
             " json_extract(value_json,'$.activity_score'), "
-            " json_extract(value_json,'$.on_body') "
+            " json_extract(value_json,'$.on_body'), "
+            " json_extract(value_json,'$.m_byte14') "
             "FROM ble_historical_parsed WHERE record_type='K18' "
             " AND ts>=? AND ts<? ORDER BY ts ASC",
             (day_start, day_end)
@@ -1205,7 +1207,7 @@ class Handler(BaseHTTPRequestHandler):
         hr_vals, temp_vals, mot_vals = [], [], []
         on_body_count = 0
         total_count = 0
-        for ts, t, m, a, ob in rows:
+        for ts, t, m, a, ob, h in rows:
             total_count += 1
             if t is not None and 25 <= t <= 40:
                 temp.append({"ts": ts, "v": round(t, 2)}); temp_vals.append(t)
@@ -1216,6 +1218,10 @@ class Handler(BaseHTTPRequestHandler):
             on_body.append({"ts": ts, "v": 1 if ob else 0})
             if ob:
                 on_body_count += 1
+            # HR comes from K18 chunk byte 14 — only trust when on-body and in
+            # physiological range. Off-body chunks store 0 or noise.
+            if ob and h is not None and 25 <= h <= 220:
+                hr.append({"ts": ts, "v": int(h)}); hr_vals.append(int(h))
         # K18 chunks aren't fixed interval; estimate on-body minutes as a
         # fraction of the day's covered span.
         if rows and total_count > 0:
@@ -1224,15 +1230,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             on_body_seconds = 0
 
-        # HR comes from live BLE captures (not in K18); fetch separately
-        hr_rows = conn.execute(
-            "SELECT ts, bpm FROM ble_hr_standard "
-            "WHERE ts>=? AND ts<? ORDER BY ts ASC",
-            (day_start, day_end)
-        ).fetchall()
-        for ts, bpm in hr_rows:
-            if bpm and 25 <= bpm <= 220:
-                hr.append({"ts": ts, "v": bpm}); hr_vals.append(bpm)
+        # If we have no historical HR for the day, fall back to any live HR
+        # captures that happened that day (recent days only).
+        if not hr:
+            hr_rows = conn.execute(
+                "SELECT ts, bpm FROM ble_hr_standard "
+                "WHERE ts>=? AND ts<? ORDER BY ts ASC",
+                (day_start, day_end)
+            ).fetchall()
+            for ts, bpm in hr_rows:
+                if bpm and 25 <= bpm <= 220:
+                    hr.append({"ts": ts, "v": bpm}); hr_vals.append(bpm)
 
         # Events that fired during the day
         ev_rows = conn.execute(
