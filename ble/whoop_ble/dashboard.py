@@ -422,34 +422,46 @@ HTML = """<!doctype html>
 
 <div class="tab-content" id="tab-history">
   <h2>Historical data — by day</h2>
-  <div class="card" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-    <label style="color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:1px">Day</label>
-    <input id="hist_date" type="date"
-           style="padding:10px;background:#0a0d12;border:1px solid var(--grid);
-           border-radius:8px;color:var(--text);font-family:monospace"/>
-    <button class="btn secondary" onclick="loadHistoryDay()">Load</button>
-    <span style="flex:1"></span>
-    <span class="meta" id="hist_summary">—</span>
+  <div style="display:grid;grid-template-columns:360px 1fr;gap:14px;align-items:start">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <button class="btn secondary" style="padding:6px 12px;font-size:12px" onclick="calNav(-1)">‹</button>
+        <div id="cal_title" style="font-size:15px;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent)">—</div>
+        <button class="btn secondary" style="padding:6px 12px;font-size:12px" onclick="calNav(1)">›</button>
+      </div>
+      <div id="cal_grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;font-size:12px"></div>
+      <div class="meta" style="margin-top:14px;display:flex;gap:14px;flex-wrap:wrap">
+        <span><span style="display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:2px;vertical-align:middle"></span> has data</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#1f6b3a;border-radius:2px;vertical-align:middle"></span> selected</span>
+      </div>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div>
+            <div class="label">Showing</div>
+            <div style="font-size:24px;font-weight:300" id="hist_title">Pick a day on the left</div>
+          </div>
+          <span class="meta" id="hist_summary">—</span>
+        </div>
+      </div>
+      <div class="grid-4">
+        <div class="card"><div class="label">HR (live captures)</div>
+          <div class="value" style="color:var(--hr);font-size:32px"><span id="hist_hr_avg">—</span></div>
+          <div class="meta" id="hist_hr_meta">—</div></div>
+        <div class="card"><div class="label">Skin temp</div>
+          <div class="value" style="color:var(--temp);font-size:32px"><span id="hist_temp_avg">—</span><span class="unit">°C</span></div>
+          <div class="meta" id="hist_temp_meta">—</div></div>
+        <div class="card"><div class="label">Motion</div>
+          <div class="value" style="color:var(--motion);font-size:32px"><span id="hist_mot_avg">—</span></div>
+          <div class="meta" id="hist_mot_meta">—</div></div>
+        <div class="card"><div class="label">On-body</div>
+          <div class="value" style="color:var(--accent);font-size:32px"><span id="hist_onbody">—</span><span class="unit">min</span></div>
+          <div class="meta" id="hist_onbody_meta">—</div></div>
+      </div>
+    </div>
   </div>
-  <div class="card" style="margin-top:14px">
-    <div class="label">Days with data</div>
-    <div id="hist_days_list" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px"></div>
-  </div>
-  <div class="grid-4" style="margin-top:14px">
-    <div class="card"><div class="label">HR (live captures)</div>
-      <div class="value" style="color:var(--hr);font-size:32px"><span id="hist_hr_avg">—</span></div>
-      <div class="meta" id="hist_hr_meta">—</div></div>
-    <div class="card"><div class="label">Skin temp</div>
-      <div class="value" style="color:var(--temp);font-size:32px"><span id="hist_temp_avg">—</span></div>
-      <div class="meta" id="hist_temp_meta">—</div></div>
-    <div class="card"><div class="label">Motion</div>
-      <div class="value" style="color:var(--motion);font-size:32px"><span id="hist_mot_avg">—</span></div>
-      <div class="meta" id="hist_mot_meta">—</div></div>
-    <div class="card"><div class="label">On-body</div>
-      <div class="value" style="color:var(--accent);font-size:32px"><span id="hist_onbody">—</span><span class="unit">min</span></div>
-      <div class="meta" id="hist_onbody_meta">—</div></div>
-  </div>
-  <h2>HR over day</h2>
+  <h2>Heart rate</h2>
   <canvas id="histHrChart" height="80"></canvas>
   <h2>Skin temperature</h2>
   <canvas id="histTempChart" height="80"></canvas>
@@ -796,34 +808,116 @@ function ensureHistCharts(){
   histMotChart = mkChart('histMotChart','rgb(62,255,139)','Motion intensity',0,0.5);
   histActChart = mkChart('histActChart','rgb(195,116,255)','Activity score',0,255);
 }
+// State for the calendar widget
+const histState = {
+  daysWithData: new Map(),   // 'YYYY-MM-DD' -> {chunks}
+  selected: null,            // 'YYYY-MM-DD'
+  calCursor: null,           // Date pointing at the visible month (day=1)
+};
+const MONTHS = ['January','February','March','April','May','June','July',
+                'August','September','October','November','December'];
+const DOWS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+function ymd(d){
+  return d.getFullYear() + '-' +
+    String(d.getMonth()+1).padStart(2,'0') + '-' +
+    String(d.getDate()).padStart(2,'0');
+}
+function renderCalendar(){
+  const c = histState.calCursor;
+  if(!c) return;
+  document.getElementById('cal_title').textContent =
+    MONTHS[c.getMonth()] + ' ' + c.getFullYear();
+  const grid = document.getElementById('cal_grid');
+  grid.innerHTML = '';
+  // Day-of-week headers (Mon..Sun)
+  DOWS.forEach(d => {
+    const h = document.createElement('div');
+    h.textContent = d;
+    h.style.cssText = 'color:var(--mute);font-size:10px;text-align:center;padding:4px 0;letter-spacing:1px';
+    grid.appendChild(h);
+  });
+  const first = new Date(c.getFullYear(), c.getMonth(), 1);
+  // JS: Sun=0 .. Sat=6 ; we want Mon=0
+  const firstDow = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(c.getFullYear(), c.getMonth()+1, 0).getDate();
+  // Leading blanks
+  for(let i=0; i<firstDow; i++){
+    const el = document.createElement('div');
+    grid.appendChild(el);
+  }
+  const today = ymd(new Date());
+  for(let day=1; day<=daysInMonth; day++){
+    const dateStr = c.getFullYear() + '-' +
+      String(c.getMonth()+1).padStart(2,'0') + '-' +
+      String(day).padStart(2,'0');
+    const cell = document.createElement('div');
+    const info = histState.daysWithData.get(dateStr);
+    const hasData = !!info;
+    const isSelected = histState.selected === dateStr;
+    const isToday = today === dateStr;
+    cell.textContent = day;
+    cell.title = hasData ? (info.chunks + ' chunks') : 'no data';
+    cell.style.cssText =
+      'text-align:center;padding:10px 0;border-radius:6px;cursor:' +
+      (hasData ? 'pointer' : 'default') + ';' +
+      'background:' + (isSelected ? '#1f6b3a' : (hasData ? 'var(--accent)' : '#0a0d12')) + ';' +
+      'color:' + (hasData ? '#fff' : '#444') + ';' +
+      'font-weight:' + (isToday ? '700' : '400') + ';' +
+      'border:' + (isToday ? '1px solid var(--accent)' : '1px solid transparent') + ';' +
+      'transition:transform .08s';
+    if(hasData){
+      cell.onmouseenter = () => cell.style.transform = 'scale(1.08)';
+      cell.onmouseleave = () => cell.style.transform = '';
+      cell.onclick = () => selectHistDay(dateStr);
+    }
+    grid.appendChild(cell);
+  }
+}
+function calNav(delta){
+  if(!histState.calCursor) return;
+  histState.calCursor = new Date(
+    histState.calCursor.getFullYear(),
+    histState.calCursor.getMonth() + delta,
+    1
+  );
+  renderCalendar();
+}
 async function refreshHistDays(){
   try{
     const r = await (await fetch('/api/history/days')).json();
-    const box = document.getElementById('hist_days_list');
-    box.innerHTML = '';
-    if(!r.days || !r.days.length){
-      box.innerHTML = '<span class="meta">No historical data yet — let the drain run.</span>';
-      return;
+    histState.daysWithData.clear();
+    (r.days || []).forEach(d => histState.daysWithData.set(d.date, d));
+    if(!histState.calCursor){
+      // Open the calendar on the month of the newest day (or today)
+      const seed = (r.days && r.days.length) ? r.days[0].date : ymd(new Date());
+      const [y,m] = seed.split('-').map(Number);
+      histState.calCursor = new Date(y, m-1, 1);
     }
-    r.days.forEach(d => {
-      const el = document.createElement('span');
-      el.className = 'badge';
-      el.style.cursor = 'pointer';
-      el.textContent = d.date + ' (' + d.chunks + ')';
-      el.onclick = () => { document.getElementById('hist_date').value = d.date; loadHistoryDay(); };
-      box.appendChild(el);
-    });
-    if(!document.getElementById('hist_date').value){
-      document.getElementById('hist_date').value = r.days[0].date;
+    renderCalendar();
+    // Auto-select the newest day if nothing selected yet
+    if(!histState.selected && r.days && r.days.length){
+      selectHistDay(r.days[0].date);
     }
   }catch(e){ console.error(e); }
 }
-async function loadHistoryDay(){
-  const d = document.getElementById('hist_date').value;
-  if(!d){ return; }
+async function selectHistDay(dateStr){
+  histState.selected = dateStr;
+  // Make sure the calendar shows the right month
+  const [y,m] = dateStr.split('-').map(Number);
+  histState.calCursor = new Date(y, m-1, 1);
+  renderCalendar();
+  await loadHistoryDay(dateStr);
+}
+async function loadHistoryDay(dateStr){
+  if(!dateStr) dateStr = histState.selected;
+  if(!dateStr) return;
   ensureHistCharts();
+  document.getElementById('hist_title').textContent =
+    new Date(dateStr + 'T00:00:00').toLocaleDateString(undefined,
+      {weekday:'long', year:'numeric', month:'long', day:'numeric'});
+  document.getElementById('hist_summary').textContent = 'Loading...';
   try{
-    const r = await (await fetch('/api/history/day?date=' + d)).json();
+    const r = await (await fetch('/api/history/day?date=' + dateStr)).json();
     if(!r.ok){
       document.getElementById('hist_summary').textContent = 'Error: ' + r.error;
       return;
@@ -842,7 +936,7 @@ async function loadHistoryDay(){
     histActChart.data.datasets[0].data = r.activity.map(p => p.v);
     histActChart.update('none');
     const s = r.summary || {};
-    const setAgg = (id, metaId, agg, unit) => {
+    const setAgg = (id, metaId, agg) => {
       document.getElementById(id).textContent = agg ? agg.avg : '—';
       document.getElementById(metaId).textContent = agg
         ? (agg.min + '/' + agg.avg + '/' + agg.max + ' min/avg/max  ·  ' + agg.n + ' samples')
@@ -855,7 +949,7 @@ async function loadHistoryDay(){
     document.getElementById('hist_onbody_meta').textContent =
       (s.samples || 0) + ' K18 chunks decoded';
     document.getElementById('hist_summary').textContent =
-      d + '  ·  ' + (s.samples || 0) + ' samples';
+      (s.samples || 0).toLocaleString() + ' samples';
     if(r.events && r.events.length){
       document.getElementById('hist_events').textContent =
         r.events.map(e =>
@@ -954,13 +1048,13 @@ activateTab = function(name){
   _oldActivate(name);
   if(name === 'history'){
     refreshHistDays().then(() => {
-      // Tab content is now visible; safe to instantiate Chart.js
-      if(document.getElementById('hist_date').value) loadHistoryDay();
+      // When tab becomes visible, charts can be created safely
+      if(histState.selected) loadHistoryDay();
     });
   }
   if(name === 'alarms'){ refreshSchedules(); }
 };
-// Prime: load just the day list (no charts) so badges show up immediately
+// Prime: load day list so the calendar shows highlights immediately
 refreshHistDays();
 refreshSchedules();
 </script></body></html>
