@@ -1,74 +1,89 @@
-# Bond BLE WHOOP 5.0 → Linux (BlueZ + MediaTek hci0)
+# BLE bond WHOOP 5.0 → Linux (BlueZ + MediaTek hci0)
 
-**Conseguido 2026-05-17 11:57 AM** após várias sessões anteriores falharem em todas as 5 IO capabilities. A causa real do bloqueio não era o SMP — era a ordem de operações do `bluetoothctl`.
+**Got it working on 2026-05-17 11:57 AM** after several earlier sessions
+failed across all 5 IO capabilities. The real cause was not SMP — it was
+the order of operations in `bluetoothctl`.
 
-## Pré-requisitos
-- Strap em **pairing mode** (mantém o botão pressionado no strap até começar a piscar — confirmação do João).
-- Strap **desemparelhada de qualquer central** (Android app, outro Linux). Há rejeições silenciosas quando um peer activo segura a sessão.
-- BlueZ ≥ 5.85, kernel com `ll-privacy past-sender past-receiver`. Adaptador qualquer (MediaTek BT 5.4 confirmado).
+## Prerequisites
+- Strap in **pairing mode** (hold the strap button until it starts blinking).
+- Strap **unpaired from every central** (Android app, another Linux box).
+  Silent rejections happen when an active peer is holding the session.
+- BlueZ ≥ 5.85, kernel with `ll-privacy past-sender past-receiver`. Any
+  adapter works (MediaTek BT 5.4 confirmed).
 
-## Sequência exacta que funciona
+## Exact sequence that works
 
 ```bash
-# Em vez de pair com IO-cap rebuscadas, segue ISTO:
+# Instead of pair-with-exotic-IO-caps, use THIS:
 bluetoothctl <<'EOF'
 power on
 agent off
 agent NoInputNoOutput
 default-agent
 pairable on
-remove AA:BB:CC:DD:EE:FF
+remove XX:XX:XX:XX:XX:XX
 scan on
 EOF
-# ESPERAR pelo "[NEW] Device AA:BB:CC:DD:EE:FF WHOOP …" — strap tem de estar advertising
-# NÃO fazer scan off. Manter discovery activa.
+# WAIT for "[NEW] Device XX:XX:XX:XX:XX:XX WHOOP …" — the strap must be advertising.
+# DO NOT scan off. Keep discovery active.
 bluetoothctl <<'EOF'
-trust AA:BB:CC:DD:EE:FF
-connect AA:BB:CC:DD:EE:FF
-pair AA:BB:CC:DD:EE:FF
+trust XX:XX:XX:XX:XX:XX
+connect XX:XX:XX:XX:XX:XX
+pair XX:XX:XX:XX:XX:XX
 EOF
-# Aguardar "Pairing successful".
-bluetoothctl info AA:BB:CC:DD:EE:FF
-# Espera: Paired: yes / Bonded: yes / Trusted: yes / Connected: yes
+# Wait for "Pairing successful".
+bluetoothctl info XX:XX:XX:XX:XX:XX
+# Expect: Paired: yes / Bonded: yes / Trusted: yes / Connected: yes
 ```
 
-## Razão pela qual as tentativas anteriores falhavam
+## Why previous attempts failed
 
-Os scripts expect anteriores faziam `scan off` antes de `pair`. BlueZ remove o device do cache (`[DEL] Device …`) e `pair` responde `Device AA:BB:CC:DD:EE:FF not available`. Não havia falha SMP — não havia sequer tentativa SMP. O `Failed to pair: AuthenticationFailed` em 5 IO caps era artefacto do mesmo bug (5x o mesmo erro de ordem).
+The earlier expect scripts did `scan off` before `pair`. BlueZ then drops
+the device from cache (`[DEL] Device …`) and `pair` answers
+`Device XX:XX:XX:XX:XX:XX not available`. There was no SMP failure —
+there wasn't even an SMP attempt. The
+`Failed to pair: AuthenticationFailed` reported across 5 IO caps was an
+artefact of the same bug (5× the same ordering error).
 
-Outras coisas que **não eram** o problema (validadas durante debug):
-- IO capability — `NoInputNoOutput` (default agent) chegou.
-- Privacy / ControllerMode — defaults BlueZ.
-- `JustWorksRepairing` — não necessário.
-- `bluetoothd --experimental` — não necessário.
-- Reset bond Android — não necessário (strap pode bondar com novo central sem touch no telefone).
+Other things that **were not** the problem (validated during debug):
+- IO capability — `NoInputNoOutput` (default agent) was enough.
+- Privacy / ControllerMode — BlueZ defaults.
+- `JustWorksRepairing` — not needed.
+- `bluetoothd --experimental` — not needed.
+- Android bond reset — not needed (the strap can bond with a new central
+  without touching the phone).
 
-## Persistência
+## Persistence
 
-Após bond, a LTK fica em:
+After bonding, the LTK lives at:
 ```
-/var/lib/bluetooth/50:2E:91:D5:45:F3/AA:BB:CC:DD:EE:FF/info
+/var/lib/bluetooth/<adapter-mac>/<strap-mac>/info
 ```
-Sobrevive reboots. Para invalidar e re-pair: `bluetoothctl remove AA:BB:CC:DD:EE:FF`.
+Survives reboots. To invalidate and re-pair: `bluetoothctl remove <strap-mac>`.
 
-## Após o bond — correr daemon
+## After the bond — run the daemon
 
 ```bash
 cd ~/projects/whoop-vault
-WHOOP_BLE_MAC=AA:BB:CC:DD:EE:FF PYTHONPATH=ble \
+WHOOP_BLE_MAC=XX:XX:XX:XX:XX:XX PYTHONPATH=ble \
   .venv/bin/python -m whoop_ble.daemon
 ```
 
-Verificar entrada de dados:
+Verify data is flowing:
 ```bash
 sqlite3 data/whoop.db "SELECT COUNT(*) FROM ble_r52_frames;"
 ```
 
-Primeiras frames apareceram ~30s após daemon start, na char `fd4b0004` (encrypted — confirma que o bond resolveu o SMP gating).
+First frames showed up ~30s after daemon start on char `fd4b0004`
+(encrypted — confirms the bond resolved the SMP gating).
 
-## Próximos passos pendentes
+## Outstanding follow-ups
 
-- [ ] Ajustar parser de frame para o layout extended real (packet_type 0x20 / 0x23 que estão a chegar não correspondem aos esperados — provável off-by-one no `??` byte do header extended).
-- [ ] Daemon a popular as 9 tabelas decoded (`ble_realtime`, `ble_events`, `ble_metadata`, etc.) — actualmente só `ble_r52_frames` (catch-all raw).
-- [ ] Historical buffer drain (~14 dias de dados antigos via cmd específico).
-- [ ] Systemd user unit a auto-iniciar daemon após boot.
+- [ ] Adjust the frame parser to the real extended layout (packet types
+      0x20 / 0x23 coming in do not match the expected types — likely an
+      off-by-one on the `??` byte of the extended header).
+- [ ] Daemon should populate the 9 decoded tables (`ble_realtime`,
+      `ble_events`, `ble_metadata`, etc.) — currently only
+      `ble_r52_frames` (the raw catch-all).
+- [ ] Historical buffer drain (~14 days of old data via the dedicated cmd).
+- [ ] systemd --user unit to auto-start the daemon after boot.

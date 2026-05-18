@@ -1,7 +1,5 @@
 # BLE phase 8 — verification report
 
-Executado em: $(date)
-
 ## Test suite
 
 ```
@@ -9,16 +7,17 @@ $ cd ble && ../.venv/bin/python -m pytest tests/ -v
 ============================== 26 passed in 0.02s ==============================
 ```
 
-26/26 testes a passar (CRC8, CRC32 custom, frame encode/decode, FrameAssembler
-resync, commands com payload 5-byte do 5.0, decoders de realtime/event/metadata/IMU).
+26/26 tests passing (CRC8, custom CRC32, frame encode/decode, FrameAssembler
+resync, commands with the Whoop 5.0 5-byte payload, decoders for
+realtime/event/metadata/IMU).
 
-## Artefactos entregues
+## Delivered artefacts
 
-| Caminho                                | Estado |
+| Path                                   | Status |
 |----------------------------------------|--------|
 | `ble/whoop_ble/__init__.py`            | OK     |
 | `ble/whoop_ble/client.py`              | OK     |
-| `ble/whoop_ble/db.py`                  | OK (tabelas `ble_*` criadas na DB partilhada) |
+| `ble/whoop_ble/db.py`                  | OK (`ble_*` tables created in the shared DB) |
 | `ble/whoop_ble/crc.py`                 | OK     |
 | `ble/whoop_ble/frame.py`               | OK     |
 | `ble/whoop_ble/commands.py`            | OK     |
@@ -27,7 +26,7 @@ resync, commands com payload 5-byte do 5.0, decoders de realtime/event/metadata/
 | `ble/whoop_ble/historical.py`          | OK     |
 | `ble/whoop_ble/daemon.py`              | OK     |
 | `ble/whoop_ble/cli.py`                 | OK (`python -m whoop_ble.cli hr-stream`) |
-| `ble/scripts/scan.py`                  | OK — encontra a pulseira |
+| `ble/scripts/scan.py`                  | OK — finds the strap |
 | `ble/scripts/drain_history.py`         | OK     |
 | `ble/scripts/whoop-ble.service`        | OK     |
 | `ble/scripts/install_daemon.sh`        | OK     |
@@ -35,71 +34,58 @@ resync, commands com payload 5-byte do 5.0, decoders de realtime/event/metadata/
 | `ble/tests/test_frame.py`              | 9/9 passed |
 | `ble/tests/test_commands_decoders.py`  | 11/11 passed |
 | `docs/ble-raw-extraction.md`           | OK     |
-| `scripts/status.py` (extended)         | OK (secção `[BLE direct tables]`) |
+| `scripts/status.py` (extended)         | OK (`[BLE direct tables]` section) |
 | `README.md` (link)                     | OK     |
 
 ## Scan run (live, hci0)
 
 ```
-[scan] candidatos:
+[scan] candidates:
   MAC                    RSSI  Name
-  AA:BB:CC:DD:EE:FF       -88  WHOOP 5AGXXXXXXX
+  XX:XX:XX:XX:XX:XX       -88  WHOOP <serial>
 ```
 
-→ a pulseira está a anunciar BLE e foi detectada.
+→ the strap is advertising over BLE and was detected.
 
-## O que funciona headless (zero acção humana)
+## What works headless (no human action)
 
-- Testes do parser (`pytest`) — todos passam offline
-- BLE scan — funciona com hci0 já configurado
-- DB schema (`ble_*` tables) auto-criado no primeiro import
-- Status report (`scripts/status.py`) mostra as novas tabelas
+- Parser tests (`pytest`) — all pass offline
+- BLE scan — works with hci0 already configured
+- DB schema (`ble_*` tables) auto-created on first import
+- Status report (`scripts/status.py`) shows the new tables
 
-## O que requer acção humana
+## What requires human action
 
-1. **Unpair da app oficial Whoop** (telemóvel: Whoop app → Settings →
-   Hardware → Strap → Forget device). Sem isto, qualquer tentativa de
-   `connect()` falha porque o bond exclusivo está com a app.
-2. **Correr `python ble/scripts/scan.py`** com a pulseira por perto.
-3. **Gravar o MAC no `.env`**:
+1. **Unpair from the official Whoop app** (phone: Whoop app → Settings →
+   Hardware → Strap → Forget device). Without this any `connect()`
+   attempt fails because the exclusive bond is owned by the app.
+2. **Run `python ble/scripts/scan.py`** with the strap nearby.
+3. **Save the MAC into `.env`**:
    ```
-   echo 'WHOOP_BLE_MAC=AA:BB:CC:DD:EE:FF' >> .env
+   echo 'WHOOP_BLE_MAC=XX:XX:XX:XX:XX:XX' >> .env
    ```
 4. **Smoke test live HR**:
    ```
    .venv/bin/python -m whoop_ble.cli hr-stream
    ```
-   Esperado: linhas `HR N bpm rr=[...]` a aparecer ~1×/s.
-5. **Drain do buffer historical** (uma vez por dia):
+   Expected: `HR N bpm rr=[...]` lines appearing roughly once per second.
+5. **Drain the historical buffer** (once a day):
    ```
    .venv/bin/python ble/scripts/drain_history.py
    ```
-6. **Instalar daemon** (opcional, recomendado):
+6. **Install the daemon** (optional, recommended):
    ```
    bash ble/scripts/install_daemon.sh
    systemctl --user daemon-reload
    systemctl --user enable --now whoop-ble.service
-   loginctl enable-linger $USER   # sobrevive ao logout
+   loginctl enable-linger $USER   # survives logout
    ```
 
-## Riscos conhecidos
+## Known risks
 
-- O firmware da pulseira pode mudar o layout dos payloads `0x28`/`0x31` num
-  update via app oficial. Como a app está desemparelhada, isso não
-  acontece automaticamente, mas se voltares a parear, o firmware pode ser
-  actualizado e os decoders custom podem precisar de revisão.
-- Scores Whoop (Recovery/Strain/Sleep) são **server-side** — não estão
-  neste pipeline, e nunca estarão. Só o raw.
-
-## Commits (8 commits novos)
-
-```
-fb6f276 ble phase 7: docs/ble-raw-extraction.md + status.py BLE section + README link
-e82e753 ble phase 6: continuous daemon + systemd user unit
-762167a ble phase 5: historical buffer drain (~14 days)
-fa3150d ble phase 4: commands enum + decoders for realtime/event/metadata/IMU
-7c8ef69 ble phase 3: frame parser + custom CRC32 + 15 passing pytest
-2550276 ble phase 2: WhoopBLE client + standard HR streaming + DB schema
-82c32c3 ble phase 1: scan script + package skeleton
-+ this verification commit
-```
+- The strap firmware could change the `0x28`/`0x31` payload layout in an
+  update pushed via the official app. Since the app is unpaired this does
+  not happen automatically, but if you re-pair the firmware may be
+  updated and the custom decoders may need a revisit.
+- Whoop scores (Recovery/Strain/Sleep) are **server-side** — they are
+  not in this pipeline and never will be. Raw signals only.

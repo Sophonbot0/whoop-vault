@@ -1,75 +1,76 @@
-# BLE raw extraction — Whoop 5.0 sem cloud
+# BLE raw extraction — Whoop 5.0 without the cloud
 
-> **Objectivo:** extrair *todos* os dados raw possíveis da pulseira Whoop 5.0
-> directamente por Bluetooth, sem depender da app oficial nem dos servidores
-> da Whoop. Continua a funcionar **após o fim da subscrição** e mesmo que a
-> Whoop bana a conta — o hardware da pulseira não é desligado remotamente.
+> **Goal:** extract *every* raw signal we can from the Whoop 5.0 strap
+> directly over Bluetooth, with no dependency on the official app or
+> Whoop's servers. Keeps working **after the subscription ends** and even
+> if Whoop bans the account — the strap hardware is not remotely
+> deactivated.
 
 ## TL;DR
 
 ```bash
-# 1. desemparelha a pulseira da app oficial Whoop (no telemóvel)
-# 2. scan
+# 1. Unpair the strap from the official Whoop app (on the phone)
+# 2. Scan
 .venv/bin/python ble/scripts/scan.py
-# 3. grava o MAC no .env (linha sugerida pelo scan)
+# 3. Save the MAC into .env (the line suggested by the scan)
 echo 'WHOOP_BLE_MAC=XX:XX:XX:XX:XX:XX' >> .env
-# 4. live HR (sanity check, usa standard GATT)
+# 4. Live HR (sanity check, uses standard GATT)
 .venv/bin/python -m whoop_ble.cli hr-stream
-# 5. drain do buffer historical (~14 dias)
+# 5. Drain the historical buffer (~14 days)
 .venv/bin/python ble/scripts/drain_history.py
-# 6. daemon contínuo
+# 6. Continuous daemon
 .venv/bin/python -m whoop_ble.daemon
-# (opcional) instalar como systemd --user:
+# (optional) install as systemd --user:
 bash ble/scripts/install_daemon.sh
 ```
 
-## O que está a ser extraído
+## What gets extracted
 
-Tudo é persistido na mesma SQLite do projecto (`data/whoop.db`) em tabelas
-com prefixo `ble_`:
+Everything is persisted into the project's SQLite (`data/whoop.db`) under
+tables prefixed `ble_`:
 
-| Tabela              | Conteúdo                                    | Fonte                       |
-|---------------------|---------------------------------------------|-----------------------------|
-| `ble_hr_standard`   | BPM + intervalos R-R (ms)                   | GATT 0x2A37 (standard)      |
-| `ble_realtime`      | HR + RR + bateria                           | custom 0x28 REALTIME_DATA   |
-| `ble_events`        | wrist on/off, charge, sleep, button         | custom 0x30 EVENT           |
-| `ble_metadata`      | temperatura cutânea, SpO₂, freq. respiratória | custom 0x31 METADATA      |
-| `ble_accel`         | acelerómetro raw (XYZ, g)                   | custom 0x2B REALTIME_RAW    |
-| `ble_imu`           | IMU completo (accel + giro)                 | custom 0x33 IMU stream      |
-| `ble_historical`    | dump completo do buffer interno (~14 dias)  | custom 0x2F HISTORICAL_DATA |
+| Table               | Contents                                       | Source                       |
+|---------------------|------------------------------------------------|------------------------------|
+| `ble_hr_standard`   | BPM + R-R intervals (ms)                       | GATT 0x2A37 (standard)       |
+| `ble_realtime`      | HR + RR + battery                              | custom 0x28 REALTIME_DATA    |
+| `ble_events`        | wrist on/off, charge, sleep, button            | custom 0x30 EVENT            |
+| `ble_metadata`      | skin temperature, SpO₂, respiratory rate       | custom 0x31 METADATA         |
+| `ble_accel`         | raw accelerometer (XYZ, g)                     | custom 0x2B REALTIME_RAW     |
+| `ble_imu`           | full IMU (accel + gyro)                        | custom 0x33 IMU stream       |
+| `ble_historical`    | full dump of the internal buffer (~14 days)    | custom 0x2F HISTORICAL_DATA  |
 
-Os dumps raw do historical também são preservados em
-`exports/ble-historical/{date}.jsonl` (1 frame por linha, payload em hex)
-para arqueologia futura.
+Raw historical dumps are also preserved under
+`exports/ble-historical/{date}.jsonl` (one frame per line, payload in
+hex) for future archaeology.
 
-## Por que isto não passa pela cloud Whoop
+## Why this doesn't touch the Whoop cloud
 
-- O cliente fala **directamente** com o GATT da pulseira (`bleak` sobre BlueZ).
-- Não há tokens OAuth, não há login, não há tráfego HTTP para `*.whoop.com`.
-- Funciona offline. Funciona em modo avião com o BT ligado.
-- Se a tua conta Whoop for banida, isto continua a recolher dados.
+- The client talks **directly** to the strap's GATT (`bleak` over BlueZ).
+- No OAuth tokens, no login, no HTTP traffic to `*.whoop.com`.
+- Works offline. Works in airplane mode with Bluetooth on.
+- If your Whoop account gets banned, this keeps collecting data.
 
-## Pré-requisito crítico: unpair da app oficial
+## Critical prerequisite: unpair the official app
 
-A Whoop usa **bonding BLE exclusivo** — só uma central pode estar ligada de cada vez.
-Tens de remover o emparelhamento na app Whoop:
+Whoop uses **exclusive BLE bonding** — only one central can be connected
+at a time. You must remove the pairing on the Whoop app:
 
-1. Abre a app Whoop no telemóvel
+1. Open the Whoop app on the phone
 2. Settings → Hardware → Strap → Forget device
-3. Confirma
-4. Faz scan local (`scripts/scan.py`) — agora a pulseira aparece advertindo
+3. Confirm
+4. Run a local scan (`scripts/scan.py`) — the strap now advertises again
 
-> ⚠️ Não desliga só o Bluetooth do telemóvel — a app pode tentar reconectar
-> em background. Faz "forget device" mesmo.
+> ⚠️ Just turning Bluetooth off on the phone is not enough — the app may
+> reconnect in the background. Do an actual "forget device".
 
-## Protocolo (UUIDs)
+## Protocol (UUIDs)
 
 ```
 Service               fd4b0001-cce1-4033-93ce-002d5875f58a
 CMD_TO_STRAP          fd4b0002  (write-no-response)
-CMD_FROM_STRAP        fd4b0003  (notify; ACK + respostas)
-EVENTS_FROM_STRAP     fd4b0004  (notify; HR ~1Hz, wrist, bateria)
-DATA_FROM_STRAP       fd4b0005  (notify; chunks de historical dump)
+CMD_FROM_STRAP        fd4b0003  (notify; ACK + responses)
+EVENTS_FROM_STRAP     fd4b0004  (notify; HR ~1Hz, wrist, battery)
+DATA_FROM_STRAP       fd4b0005  (notify; historical-dump chunks)
 
 Standard GATT
 0x180D / 0x2A37       Heart Rate Service / Measurement
@@ -77,70 +78,71 @@ Standard GATT
 0x180A                Device Information
 ```
 
-## Formato do frame custom
+## Custom frame format
 
 ```
 0xAA | length(2 LE) | CRC8(header) | type | seq | cmd | payload | CRC32(4 LE)
 ```
 
-CRC32 com `xor_output = 0xF43F44AC` (não-standard — implementado em
-`whoop_ble/crc.py`, testado em `tests/test_crc.py`).
+CRC32 uses `xor_output = 0xF43F44AC` (non-standard — implemented in
+`whoop_ble/crc.py`, tested in `tests/test_crc.py`).
 
 Packet types: `0x23 COMMAND`, `0x24 RESPONSE`, `0x28 REALTIME_DATA`,
 `0x2B REALTIME_RAW_DATA`, `0x2F HISTORICAL_DATA`, `0x30 EVENT`,
 `0x31 METADATA`, `0x33 IMU_STREAM`.
 
-## Commands relevantes
+## Relevant commands
 
-| ID | Nome                          | Notas                                                     |
-|----|-------------------------------|-----------------------------------------------------------|
-| 3  | TOGGLE_REALTIME_HR            | activa stream HR via custom service                       |
-| 10 | SET_CLOCK                     | **5.0 usa payload de 5 bytes** (uint32 epoch + tz flag)   |
-| 14 | TOGGLE_GENERIC_HR_PROFILE     | activa o standard HR broadcast (0x2A37)                   |
-| 22 | SEND_HISTORICAL_DATA          | inicia drain do buffer (~14 dias)                         |
-| 26 | GET_BATTERY_LEVEL             | leitura pontual                                           |
-| 81 | START_RAW_DATA                | accel raw                                                 |
-| 82 | STOP_RAW_DATA                 |                                                           |
-| 107| ENABLE_OPTICAL_DATA           | PPG raw                                                   |
-| 108| TOGGLE_OPTICAL_MODE           |                                                           |
+| ID | Name                          | Notes                                                      |
+|----|-------------------------------|------------------------------------------------------------|
+| 3  | TOGGLE_REALTIME_HR            | enables HR stream over the custom service                  |
+| 10 | SET_CLOCK                     | **5.0 uses a 5-byte payload** (uint32 epoch + tz flag)     |
+| 14 | TOGGLE_GENERIC_HR_PROFILE     | enables the standard HR broadcast (0x2A37)                 |
+| 22 | SEND_HISTORICAL_DATA          | starts a drain of the buffer (~14 days)                    |
+| 26 | GET_BATTERY_LEVEL             | one-shot read                                              |
+| 81 | START_RAW_DATA                | raw accel                                                  |
+| 82 | STOP_RAW_DATA                 |                                                            |
+| 107| ENABLE_OPTICAL_DATA           | raw PPG                                                    |
+| 108| TOGGLE_OPTICAL_MODE           |                                                            |
 
-## Limitações honestas
+## Honest limitations
 
-- Os **scores oficiais Whoop** (Recovery, Strain, Sleep Performance) são
-  calculados **server-side** em modelos proprietários. Não são bit-replicáveis
-  a partir do raw, apenas aproximáveis. Esses ficam fora deste pipeline.
-- O *layout* exacto dos payloads `0x31 METADATA` e `0x28 REALTIME_DATA` no
-  firmware 5.0 ainda não está 100% confirmado. Os decoders fazem
-  *best-effort* e preservam sempre o `payload_hex` para reanálise.
-- A pulseira é **agressiva a desconectar** — daí o reconnect exponencial
-  no daemon.
+- The **official Whoop scores** (Recovery, Strain, Sleep Performance) are
+  computed **server-side** in proprietary models. They are not
+  bit-replicable from the raw, only approximable. They are out of scope
+  for this pipeline.
+- The exact layout of the `0x31 METADATA` and `0x28 REALTIME_DATA`
+  payloads on firmware 5.0 is not 100% confirmed. The decoders are
+  best-effort and always preserve the `payload_hex` for re-analysis.
+- The strap is **aggressive about disconnecting** — hence the
+  exponential reconnect in the daemon.
 
-## Riscos
+## Risks
 
-- A Whoop pode detectar uso não oficial (e.g. analytics no firmware) e
-  revogar o acesso à conta cloud. Isto é **irrelevante** para este
-  pipeline, que não usa a cloud.
-- O firmware pode ser actualizado num future update *via app oficial* —
-  mas se a app está desemparelhada, isso não acontece.
-- BLE bonding é exclusivo: se voltares a parear com a app Whoop, este
-  cliente perde a ligação até fazeres unpair de novo.
+- Whoop could detect non-official use (e.g. firmware telemetry) and
+  revoke cloud-account access. That is **irrelevant** to this pipeline,
+  which does not use the cloud.
+- The firmware can be updated in a future drop *via the official app* —
+  but if the app is unpaired this does not happen.
+- BLE bonding is exclusive: if you re-pair the Whoop app this client
+  loses connectivity until you unpair again.
 
-## Sanity checks que NÃO requerem hardware
+## Sanity checks that do NOT require hardware
 
 ```bash
-# Os testes do parser/CRC correm offline:
+# Parser/CRC tests run offline:
 cd ble && ../.venv/bin/python -m pytest tests/ -v
-# Esperado: 26 passed
+# Expected: 26 passed
 ```
 
-Se os testes passarem, a parte protocolar está correcta — só falta o
-hardware aceitar a conexão (= unpair da app).
+If the tests pass the protocol layer is correct — only the hardware
+needs to accept the connection (= unpair the app).
 
-## Referências
+## References
 
-- `Sivasai2207/WHOOP-Reverse-Engineering-5.0` — único repo público que
-  confirma extracção 5.0 unsubscribed (Kotlin)
-- `jogolden/whoomp` — referência canónica 4.0, 65+ commands mapeados
+- `Sivasai2207/WHOOP-Reverse-Engineering-5.0` — the only public repo
+  confirming 5.0 extraction while unsubscribed (Kotlin)
+- `jogolden/whoomp` — canonical 4.0 reference, 65+ commands mapped
 - `andyguzmaneth/whoop4-ble` — Python, historical drain
-- `NikoKoll/WhoopBLE` — Swift, sequência completa de enable
-- `project-whoopsie/whoopsie-protocol` — frame format formal
+- `NikoKoll/WhoopBLE` — Swift, full enable sequence
+- `project-whoopsie/whoopsie-protocol` — formal frame format
