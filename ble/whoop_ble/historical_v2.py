@@ -159,16 +159,20 @@ async def drain_v2(
             meta_kind = f.command_byte if f.command_byte in (1, 2, 3) else f.sub_event
             rec["kind"] = f"metadata_sub{meta_kind}"
 
-            if meta_kind == HISTORY_END and len(f.payload) >= 8:
-                # The metadata buffer layout from ch0/b.java:
-                #   inner[3:7]  = f.payload[0:4]  → timestamp/start_id field
-                #   inner[7:11] = f.payload[4:8]  → device-clock/end_id field
-                # The strap accepts the ACK as long as the field positions
-                # are echoed back. (We tried offsets [1:5]/[5:9] per the APK
-                # I()/K() reads — those mapped to inner[13:17] / [17:21] and
-                # the strap rejected them as zeros.)
-                start_id = f.payload[0:4]
-                end_id = f.payload[4:8]
+            if meta_kind == HISTORY_END and len(f.payload) >= 18:
+                # Decoded from APK (xg0/q.java + ch0/b.java + ch0/h.java):
+                #   ACK = [SUCCESS, I() (4B), K() (4B)]
+                #   I() reads inner_buffer[13:17]  — the "start_id" cursor
+                #   K() reads inner_buffer[17:21]  — the "end_id" cursor
+                # Our f.payload starts at inner[3:], so they map to:
+                #   start_id = f.payload[10:14]
+                #   end_id   = f.payload[14:18]
+                # PREVIOUS BUG: we were sending f.payload[0:4] / [4:8] which
+                # are the timestamp/device-clock fields. The strap received
+                # random IDs, never advanced its internal cursor, and replayed
+                # the same window 5-10× — capping unique-chunk throughput.
+                start_id = f.payload[10:14]
+                end_id = f.payload[14:18]
                 rec["start_id_hex"] = start_id.hex()
                 rec["end_id_hex"] = end_id.hex()
                 log.info("HISTORY_END start=%s end=%s — queue ACK",
