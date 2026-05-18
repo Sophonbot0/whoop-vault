@@ -165,9 +165,24 @@ def backfill_parsed(conn, *, incremental: bool = False) -> dict[str, int]:
         pass
 
     if incremental:
-        max_src = conn.execute(
-            "SELECT COALESCE(MAX(source_id), 0) FROM ble_historical_parsed"
-        ).fetchone()[0]
+        # Use a dedicated checkpoint table so we advance even when ALL the
+        # newly arrived raw rows are duplicates (INSERT OR IGNORE silently
+        # rejects them, so MAX(source_id) on ble_historical_parsed would
+        # never advance past the last successful insert).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS parser_checkpoints ("
+            " name TEXT PRIMARY KEY, source_id INTEGER NOT NULL)"
+        )
+        row = conn.execute(
+            "SELECT source_id FROM parser_checkpoints WHERE name='historical_v2'"
+        ).fetchone()
+        if row:
+            max_src = row[0]
+        else:
+            # First migration: seed from the existing parsed rows.
+            max_src = conn.execute(
+                "SELECT COALESCE(MAX(source_id), 0) FROM ble_historical_parsed"
+            ).fetchone()[0]
     else:
         max_src = 0
 
@@ -246,6 +261,17 @@ def backfill_parsed(conn, *, incremental: bool = False) -> dict[str, int]:
                 skipped += 1
         except Exception:
             skipped += 1
+    # Persist the high-water mark regardless of insert outcome so we don't
+    # re-scan the same duplicates every tick (the strap occasionally rewinds
+    # its cursor and replays an old slice; with INSERT OR IGNORE we'd then
+    # process the same raw rows on every sweep until something new arrived).
+    if incremental and rows:
+        new_high = rows[-1][0]
+        conn.execute(
+            "INSERT OR REPLACE INTO parser_checkpoints(name, source_id) "
+            "VALUES('historical_v2', ?)",
+            (new_high,)
+        )
     conn.commit()
     return {"inserted": inserted, "skipped": skipped}
 
