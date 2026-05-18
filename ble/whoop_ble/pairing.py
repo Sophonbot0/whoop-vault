@@ -100,7 +100,22 @@ async def _bluetoothctl(*commands: str, timeout: float = 30.0) -> tuple[int, str
 
 
 async def scan_for_whoop(scan_seconds: float = 10.0) -> Optional[str]:
-    """Scan and return the first 'WHOOP' device MAC discovered."""
+    """Scan and return the first 'WHOOP' device MAC discovered.
+
+    Uses bleak for active scanning (more reliable than ``bluetoothctl
+    scan le``) and falls back to bluetoothctl on failure.
+    """
+    # 1) Try bleak first — fast, deterministic timeout, sees Maverick adv data.
+    try:
+        from bleak import BleakScanner
+        devices = await BleakScanner.discover(timeout=scan_seconds, scanning_mode="active")
+        for d in devices:
+            name = (d.name or "") or ""
+            if "WHOOP" in name.upper():
+                return d.address
+    except Exception:
+        pass
+    # 2) Fallback: bluetoothctl text scrape.
     await _bluetoothctl("power on", "agent NoInputNoOutput", "default-agent")
     proc = await asyncio.create_subprocess_exec(
         "bluetoothctl",
@@ -137,9 +152,34 @@ async def scan_for_whoop(scan_seconds: float = 10.0) -> Optional[str]:
 
 
 async def pair_whoop(mac: Optional[str] = None) -> dict:
-    """Full pairing sequence. If MAC not given, scans first."""
+    """Full pairing sequence. If MAC not given, scans first.
+
+    Fast-path: if a MAC is already saved in .env AND BlueZ still has the
+    bond, we skip the re-pair (which would briefly drop the bond and then
+    fail to find the strap if it's idle / off-body / not advertising).
+    """
     log: list[str] = []
     def add(msg): log.append(msg)
+
+    # Fast-path: bond already exists, just (re)start the daemon.
+    saved = mac or _read_mac_from_env()
+    if saved:
+        try:
+            rc, info = await _bluetoothctl(f"info {saved}", timeout=5.0)
+            if "Bonded: yes" in info and "Paired: yes" in info:
+                add(f"Strap {saved} already paired & bonded — skipping re-pair.")
+                pid = daemon_pid()
+                if pid:
+                    add(f"Daemon already running (PID {pid}).")
+                    return {"ok": True, "mac": saved, "log": log,
+                            "already_paired": True}
+                # Make sure .env has the MAC the user passed in
+                if mac:
+                    _write_mac_to_env(saved)
+                return {"ok": True, "mac": saved, "log": log,
+                        "already_paired": True}
+        except Exception as e:
+            add(f"  (info check failed: {e}; continuing with full pair)")
 
     add("Stopping daemon (if running)...")
     pid = daemon_pid()
