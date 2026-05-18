@@ -162,33 +162,41 @@ async def scan_for_whoop(scan_seconds: float = 10.0) -> Optional[str]:
     return None
 
 
-async def pair_whoop(mac: Optional[str] = None) -> dict:
+async def pair_whoop(mac: Optional[str] = None,
+                     force: bool = False) -> dict:
     """Full pairing sequence. If MAC not given, scans first.
 
     Fast-path: if a MAC is already saved in .env AND BlueZ still has the
     bond, we skip the re-pair (which would briefly drop the bond and then
     fail to find the strap if it's idle / off-body / not advertising).
+    Pass ``force=True`` to bypass the fast-path and always do a fresh
+    pair — useful when the previous bond is half-broken and the strap is
+    in pairing mode (LED solid blue).
     """
     log: list[str] = []
     def add(msg): log.append(msg)
 
-    # Fast-path: bond already exists, just (re)start the daemon.
+    # Fast-path: bond already exists AND we can talk to the strap.
     saved = mac or _read_mac_from_env()
-    if saved:
+    if saved and not force:
         try:
             rc, info = await _bluetoothctl(f"info {saved}", timeout=5.0)
-            if "Bonded: yes" in info and "Paired: yes" in info:
+            bonded = "Bonded: yes" in info
+            paired = "Paired: yes" in info
+            if bonded and paired:
                 add(f"Strap {saved} already paired & bonded — skipping re-pair.")
                 pid = daemon_pid()
                 if pid:
                     add(f"Daemon already running (PID {pid}).")
                     return {"ok": True, "mac": saved, "log": log,
                             "already_paired": True}
-                # Make sure .env has the MAC the user passed in
                 if mac:
                     _write_mac_to_env(saved)
                 return {"ok": True, "mac": saved, "log": log,
                         "already_paired": True}
+            else:
+                add(f"  bond half-state (Paired={paired} Bonded={bonded}) — "
+                    "doing full re-pair")
         except Exception as e:
             add(f"  (info check failed: {e}; continuing with full pair)")
 

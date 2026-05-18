@@ -432,6 +432,7 @@ HTML = """<!doctype html>
   <div class="btn-row">
     <button class="btn" id="btn_pair" onclick="doPair()">Connect &amp; pair Whoop</button>
     <button class="btn secondary" id="btn_start" onclick="doStart()">Start daemon (already paired)</button>
+    <button class="btn secondary" id="btn_force_pair" onclick="doPair(true)" title="Force a fresh pair even if BlueZ thinks we're already bonded — use when the strap is in pairing mode (LED solid blue) but auto-connect fails">Force re-pair</button>
     <button class="btn danger" id="btn_stop" onclick="doStop()">Stop daemon</button>
   </div>
   <div class="pair-log" id="pair_log">Ready. Follow steps 1–3 then click "Connect".</div>
@@ -596,7 +597,7 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => activateTab(t.d
 // Setup tab actions
 const pairLog = document.getElementById('pair_log');
 function setBtns(disabled){
-  ['btn_pair','btn_start','btn_stop'].forEach(id =>
+  ['btn_pair','btn_start','btn_stop','btn_force_pair'].forEach(id =>
     document.getElementById(id).disabled = disabled);
 }
 function appendLog(lines){
@@ -604,14 +605,21 @@ function appendLog(lines){
   pairLog.textContent = (pairLog.textContent + '\\n' + lines).slice(-4000);
   pairLog.scrollTop = pairLog.scrollHeight;
 }
-async function doPair(){
+async function doPair(force){
   setBtns(true);
-  appendLog('=== Starting pairing flow ===');
+  appendLog('=== Starting pairing flow ===' + (force ? ' (FORCE re-pair)' : ''));
   try{
-    const r = await fetch('/api/pair', {method:'POST'});
+    const r = await fetch('/api/pair' + (force ? '?force=1' : ''),
+                          {method:'POST'});
     const j = await r.json();
     appendLog(j.log || []);
-    appendLog(j.ok ? '✓ Paired. Starting daemon...' : '✗ Pairing failed.');
+    if(j.ok && j.already_paired){
+      appendLog('ℹ️ Strap already paired & bonded — nothing to do. '
+              + 'If the strap is in pairing mode but the bond is half-broken, '
+              + 'click "Force re-pair" instead.');
+    } else {
+      appendLog(j.ok ? '✓ Paired. Starting daemon...' : '✗ Pairing failed.');
+    }
     if(j.ok){
       const s = await fetch('/api/start-daemon', {method:'POST'});
       appendLog((await s.json()).log || []);
@@ -1333,14 +1341,19 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/api/pair":
             mac = None
+            force = False
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length > 0:
                     body = json.loads(self.rfile.read(length).decode())
                     mac = body.get("mac")
+                    force = bool(body.get("force"))
+                # ?force=1 query also supported
+                if "force=1" in (u.query or ""):
+                    force = True
             except Exception:
                 pass
-            result = self._run_async(pairing.pair_whoop(mac))
+            result = self._run_async(pairing.pair_whoop(mac, force=force))
             return self._json(result)
         if u.path == "/api/start-daemon":
             return self._json(self._run_async(pairing.start_daemon()))
