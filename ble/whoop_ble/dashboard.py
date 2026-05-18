@@ -113,15 +113,23 @@ def _background_parser():
     while True:
         try:
             conn = sqlite3.connect(str(DB))
-            ps = backfill_parsed(conn, incremental=True)
+            # Drain everything that's queued before sleeping again — under
+            # a fast drain the raw table grows ~175 rows/s; one batched
+            # backfill_parsed handles ~3k rows, so loop until idle.
+            total_p = 0
+            for _ in range(10):
+                ps = backfill_parsed(conn, incremental=True)
+                total_p += ps["inserted"]
+                if ps["inserted"] == 0:
+                    break
             es = backfill_events(conn)
             conn.close()
-            if ps["inserted"] or es["inserted"]:
+            if total_p or es["inserted"]:
                 log.info("bg parse: historical=+%d events=+%d",
-                         ps["inserted"], es["inserted"])
+                         total_p, es["inserted"])
         except Exception as e:
             log.warning("bg parse error: %s", e)
-        time.sleep(30)
+        time.sleep(5)
 
 
 def _start_bg_parser():

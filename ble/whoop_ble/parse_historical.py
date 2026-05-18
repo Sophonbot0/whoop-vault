@@ -159,13 +159,25 @@ def backfill_parsed(conn, *, incremental: bool = False) -> dict[str, int]:
     else:
         max_src = 0
 
-    # Track record_ids already in DB BEFORE opening the streaming cursor.
-    # Note: opening a second conn.execute() while iterating a streaming
-    # cursor invalidates the iterator in sqlite3 — that was a silent bug
-    # that caused inserted=0 even when raw had thousands of new chunks.
-    seen = set()
-    if incremental:
-        # Pull all rids (not just last 200k) — set is cheap, correctness first.
+    # Track record_ids already in DB. In incremental mode the source_id
+    # checkpoint already guarantees we never reprocess the same raw row,
+    # so dedup is only needed to skip record_ids carried over from earlier
+    # drains (rare). We bound the lookup to a recent slice so a 100k+ set
+    # rebuild doesn't dominate each background tick.
+    seen: set = set()
+    if incremental and max_src > 0:
+        # Only pull record_ids whose source_id is close to the checkpoint —
+        # the strap re-sends overlap of at most a few hundred chunks per
+        # drain, never thousands. 50k window is overkill but cheap.
+        floor = max(max_src - 50000, 0)
+        for (rid,) in conn.execute(
+            "SELECT json_extract(value_json,'$.record_id') "
+            "FROM ble_historical_parsed WHERE source_id > ?",
+            (floor,),
+        ):
+            if rid is not None:
+                seen.add(rid)
+    elif not incremental:
         for (rid,) in conn.execute(
             "SELECT json_extract(value_json,'$.record_id') FROM ble_historical_parsed"
         ):
@@ -173,11 +185,13 @@ def backfill_parsed(conn, *, incremental: bool = False) -> dict[str, int]:
                 seen.add(rid)
 
     # Now open the streaming cursor (read all into memory to avoid future
-    # accidental invalidations when inserting).
+    # accidental invalidations when inserting). Cap each incremental sweep
+    # at 10k rows so the loop in the background parser can checkpoint
+    # frequently without holding huge buffers in memory.
     if incremental:
         rows = conn.execute(
             "SELECT id, ts, payload_json, dump_run_id FROM ble_historical "
-            "WHERE id > ? ORDER BY id",
+            "WHERE id > ? ORDER BY id LIMIT 10000",
             (max_src,),
         ).fetchall()
     else:
