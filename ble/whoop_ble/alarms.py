@@ -50,18 +50,18 @@ async def _with_strap(coro_fn):
     if not mac:
         raise RuntimeError("WHOOP_BLE_MAC not set in .env — pair first")
     last_err = None
-    for attempt in range(4):
-        log.info("alarm connect attempt %d/4 to %s", attempt + 1, mac)
+    for attempt in range(6):
+        log.info("alarm connect attempt %d/6 to %s", attempt + 1, mac)
         try:
             # Pre-scan: actively look for the strap so bleak/BlueZ has a fresh
-            # device entry before connect. BleakClient.connect with a bare MAC
-            # tries to use the cached entry and fails with "not found" if the
-            # cache is stale or empty.
-            log.info("alarm pre-scan (10s)...")
-            dev = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            # device entry before connect. After the daemon disconnects the
+            # strap can take 10-25 s to start advertising again, so we widen
+            # the scan to 25 s and retry up to 6 times.
+            log.info("alarm pre-scan (25s)...")
+            dev = await BleakScanner.find_device_by_address(mac, timeout=25.0)
             if dev is None:
                 raise RuntimeError(
-                    f"Strap {mac} not found in 10s scan — is it nearby and on body?"
+                    f"Strap {mac} not found in 25s scan — is it nearby and on body?"
                 )
             log.info("alarm pre-scan: found %s (%s)", dev.address, dev.name or "?")
             async with BleakClient(dev, timeout=45.0) as client:
@@ -87,7 +87,8 @@ async def _with_strap(coro_fn):
                 return result
         except Exception as e:
             last_err = e
-            log.warning("alarm attempt %d failed: %s", attempt + 1, e)
+            log.warning("alarm attempt %d failed: %s [%s]",
+                        attempt + 1, e, type(e).__name__)
             await asyncio.sleep(3.0)
     raise last_err if last_err else RuntimeError("connect failed")
 
