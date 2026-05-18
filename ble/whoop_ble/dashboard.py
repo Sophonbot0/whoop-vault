@@ -708,12 +708,25 @@ function mkChart(id,color,label,ymin,ymax){
     type:'line',
     data:{labels:[],datasets:[{label,data:[],borderColor:color,
       backgroundColor:color.replace('rgb','rgba').replace(')',',0.12)'),
-      pointRadius:0,borderWidth:2,tension:0.25,fill:true}]},
+      pointRadius:0,pointHoverRadius:5,pointHoverBackgroundColor:color,
+      pointHoverBorderColor:'#fff',pointHoverBorderWidth:2,
+      borderWidth:2,tension:0.25,fill:true}]},
     options:{animation:false,responsive:true,
+      interaction:{mode:'index',intersect:false,axis:'x'},
+      hover:{mode:'index',intersect:false},
       scales:{x:{ticks:{color:'#888',maxTicksLimit:8},grid:{color:'#1a1f29'}},
               y:{ticks:{color:'#888'},grid:{color:'#1a1f29'},
                  suggestedMin:ymin,suggestedMax:ymax}},
-      plugins:{legend:{labels:{color:'#aaa'}}}}
+      plugins:{
+        legend:{labels:{color:'#aaa'}},
+        tooltip:{
+          mode:'index',intersect:false,
+          backgroundColor:'#0a0d12',titleColor:'#fff',bodyColor:'#ddd',
+          borderColor:color,borderWidth:1,padding:10,
+          caretSize:6,displayColors:false
+        }
+      }
+    }
   });
 }
 const hrChart=mkChart('hrChart','rgb(255,56,96)','HR (bpm)',40,160);
