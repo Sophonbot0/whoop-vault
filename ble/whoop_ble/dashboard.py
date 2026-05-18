@@ -1255,6 +1255,25 @@ class Handler(BaseHTTPRequestHandler):
                 if bpm and 25 <= bpm <= 220:
                     hr.append({"ts": ts, "v": bpm}); hr_vals.append(bpm)
 
+        def _insert_gaps(series: list[dict], max_gap_s: float = 120.0) -> list[dict]:
+            """Insert ``{ts, v: None}`` placeholders whenever consecutive
+            samples are farther apart than ``max_gap_s``. Chart.js leaves
+            those segments empty (spanGaps defaults to false)."""
+            if len(series) < 2:
+                return series
+            out = [series[0]]
+            for prev, cur in zip(series, series[1:]):
+                if cur["ts"] - prev["ts"] > max_gap_s:
+                    # Drop a null right after prev so the line breaks
+                    out.append({"ts": prev["ts"] + 1, "v": None})
+                out.append(cur)
+            return out
+
+        hr = _insert_gaps(hr, max_gap_s=120)
+        temp = _insert_gaps(temp, max_gap_s=120)
+        motion = _insert_gaps(motion, max_gap_s=120)
+        act = _insert_gaps(act, max_gap_s=120)
+
         # Events that fired during the day
         ev_rows = conn.execute(
             "SELECT rx_ts, event_name, value_json FROM ble_events_v2 "
@@ -1485,8 +1504,21 @@ class Handler(BaseHTTPRequestHandler):
             hr = [{"ts": r[0], "bpm": r[1]} for r in hr_rows]
             temp = [{"ts": r[0], "temp": r[1]} for r in temp_rows if r[1] is not None]
             imu = [{"ts": r[0], "mag": r[1]} for r in imu_rows if r[1] is not None]
+            # Insert null gaps so the chart line breaks during data dropouts
+            def _gaps(s, key, max_gap_s=15.0):
+                if len(s) < 2:
+                    return s
+                out = [s[0]]
+                for prev, cur in zip(s, s[1:]):
+                    if cur["ts"] - prev["ts"] > max_gap_s:
+                        out.append({"ts": prev["ts"] + 1, key: None})
+                    out.append(cur)
+                return out
+            hr = _gaps(hr, "bpm", 10.0)        # live HR ~1Hz, break if >10s
+            temp = _gaps(temp, "temp", 120.0)  # K18 every ~10-30s
+            imu = _gaps(imu, "mag", 120.0)
             hr_v = [r[1] for r in hr_rows]
-            t_v = [r["temp"] for r in temp]
+            t_v = [r["temp"] for r in temp if r["temp"] is not None]
             body = {
                 "hr": hr,
                 "hr_min": min(hr_v) if hr_v else None,
