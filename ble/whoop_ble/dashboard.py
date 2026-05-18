@@ -779,30 +779,46 @@ async function poll(){
       hrChart.data.labels=j.hr.map(s=>new Date(s.ts*1000).toLocaleTimeString());
       hrChart.data.datasets[0].data=j.hr.map(s=>s.bpm);
       hrChart.update('none');
-      const last=j.hr[j.hr.length-1];
-      document.getElementById('bpm').textContent=last.bpm;
-      document.getElementById('hr_meta').textContent=
-        fmtDate(last.ts)+'  ·  '+j.hr_min+'/'+j.hr_avg+'/'+j.hr_max+' min/avg/max  ·  '+j.hr.length+' samples';
+      // Last numeric (non-null) sample for the big number readout
+      const lastNum = [...j.hr].reverse().find(s => s.bpm != null);
+      if(lastNum){
+        document.getElementById('bpm').textContent=lastNum.bpm;
+        document.getElementById('hr_meta').textContent=
+          fmtDate(lastNum.ts)+'  ·  '+j.hr_min+'/'+j.hr_avg+'/'+j.hr_max+' min/avg/max  ·  '+j.hr.length+' samples';
+      } else {
+        document.getElementById('bpm').textContent='—';
+        document.getElementById('hr_meta').textContent='no recent samples (strap off-body?)';
+      }
     }
     // Temp
     if(j.temp.length){
       tempChart.data.labels=j.temp.map(s=>new Date(s.ts*1000).toLocaleTimeString());
       tempChart.data.datasets[0].data=j.temp.map(s=>s.temp);
       tempChart.update('none');
-      const lt=j.temp[j.temp.length-1];
-      document.getElementById('temp').textContent=lt.temp.toFixed(2);
-      document.getElementById('temp_meta').textContent=
-        fmtDate(lt.ts)+'  ·  '+j.temp_min+'/'+j.temp_avg+'/'+j.temp_max+' min/avg/max  ·  '+j.temp.length+' samples';
+      const lt = [...j.temp].reverse().find(s => s.temp != null);
+      if(lt){
+        document.getElementById('temp').textContent=lt.temp.toFixed(2);
+        document.getElementById('temp_meta').textContent=
+          fmtDate(lt.ts)+'  ·  '+j.temp_min+'/'+j.temp_avg+'/'+j.temp_max+' min/avg/max  ·  '+j.temp.length+' samples';
+      } else {
+        document.getElementById('temp').textContent='—';
+        document.getElementById('temp_meta').textContent='no recent samples';
+      }
     }
     // Motion
     if(j.imu.length){
       imuChart.data.labels=j.imu.map(s=>new Date(s.ts*1000).toLocaleTimeString());
       imuChart.data.datasets[0].data=j.imu.map(s=>s.mag);
       imuChart.update('none');
-      const li=j.imu[j.imu.length-1];
-      document.getElementById('imu').textContent=li.mag.toFixed(3);
-      document.getElementById('imu_meta').textContent=
-        fmtDate(li.ts)+'  ·  '+j.imu.length+' samples';
+      const li = [...j.imu].reverse().find(s => s.mag != null);
+      if(li){
+        document.getElementById('imu').textContent=li.mag.toFixed(3);
+        document.getElementById('imu_meta').textContent=
+          fmtDate(li.ts)+'  ·  '+j.imu.length+' samples';
+      } else {
+        document.getElementById('imu').textContent='—';
+        document.getElementById('imu_meta').textContent='no recent samples';
+      }
     }
     // Battery
     if(j.battery){
