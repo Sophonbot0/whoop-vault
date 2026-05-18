@@ -151,6 +151,18 @@ def backfill_parsed(conn, *, incremental: bool = False) -> dict[str, int]:
             conn.commit()
         except Exception:
             pass
+    # Hard dedup at the DB layer: unique partial index on (record_id) for K18
+    # rows. Combined with INSERT OR IGNORE below this means the strap can
+    # replay any historical chunk and we'll silently drop the duplicate.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_hp_k18_rid "
+            "ON ble_historical_parsed(json_extract(value_json,'$.record_id')) "
+            "WHERE record_type='K18'"
+        )
+        conn.commit()
+    except Exception:
+        pass
 
     if incremental:
         max_src = conn.execute(
@@ -219,14 +231,19 @@ def backfill_parsed(conn, *, incremental: bool = False) -> dict[str, int]:
                 continue
             seen.add(rid)
             record_type = f"K{rec.get('seq', '?')}"
-            conn.execute(
-                "INSERT INTO ble_historical_parsed "
+            # INSERT OR IGNORE guards against record_ids the in-memory seen
+            # set missed (older than the 50k source_id window).
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO ble_historical_parsed "
                 "(ts, record_type, value_json, dump_run_id, source_seq, source_id) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (parsed["ts"], record_type, json.dumps(parsed), run_id,
                  rec.get("seq"), src_id),
             )
-            inserted += 1
+            if cur.rowcount:
+                inserted += 1
+            else:
+                skipped += 1
         except Exception:
             skipped += 1
     conn.commit()
