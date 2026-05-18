@@ -436,6 +436,39 @@ HTML = """<!doctype html>
     <button class="btn secondary" id="btn_force_pair" onclick="doPair(true)" title="Force a fresh pair even if BlueZ thinks we're already bonded — use when the strap is in pairing mode (LED solid blue) but auto-connect fails">Force re-pair</button>
     <button class="btn danger" id="btn_stop" onclick="doStop()">Stop daemon</button>
   </div>
+
+  <div class="card" style="margin-top:14px;background:#0e1218;border-left:3px solid var(--accent)">
+    <div class="label">Button cheat-sheet</div>
+    <div class="meta" style="margin-top:8px;line-height:1.7">
+      <strong style="color:var(--text)">Connect &amp; pair Whoop</strong> — the normal happy path.
+      Scans for the strap, pairs &amp; bonds in BlueZ, then auto-starts the daemon.
+      Safe to click any time; if you're already bonded it just starts the daemon.
+      <br><br>
+      <strong style="color:var(--text)">Start daemon (already paired)</strong> — only starts the
+      collection daemon, no pairing. Use when you re-opened the dashboard
+      and the strap is already bonded.
+      <br><br>
+      <strong style="color:var(--text)">⚡ Start (boost)</strong> — same as above, but pushes the
+      BLE link into high-throughput mode (7.5 ms conn interval +
+      251-byte data length extension). Historical-drain throughput goes
+      from ~12 chunks/s to <strong>~22 chunks/s</strong> (~80% faster catch-up),
+      matching the official Whoop app's drain speed.
+      <br>
+      <span style="color:var(--warn,#ffd13e)">⚠️ Trade-off:</span> some
+      firmware revisions silently drop the link ~20 s after this
+      negotiation. If you see "sessão falhou" appearing every minute in
+      the log, use the plain <em>Start daemon</em> instead.
+      <br><br>
+      <strong style="color:var(--text)">Force re-pair</strong> — wipes the local bond and runs the
+      full pairing flow again. Click this only when the strap is in
+      pairing mode (LED solid blue) but normal Connect keeps failing
+      (e.g. after a BlueZ reset or firmware update).
+      <br><br>
+      <strong style="color:var(--text)">Stop daemon</strong> — gracefully shuts down the collection
+      process. Use before unplugging the controller or rebooting BlueZ.
+    </div>
+  </div>
+
   <div class="pair-log" id="pair_log">Ready. Follow steps 1–3 then click "Connect".</div>
 
   <h2>Manual MAC (advanced)</h2>
