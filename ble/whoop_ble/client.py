@@ -107,7 +107,11 @@ class WhoopBLE:
 
         def _cb(_sender, data: bytearray):
             payload = bytes(data)
-            log.info("RAW %s [%d] %s", char_uuid[:8], len(payload), payload.hex())
+            # Demote per-frame logging to DEBUG: at ~150 frames/s during
+            # historical drain the formatting+I/O of these lines was the
+            # single biggest CPU cost. With this disabled the drain rate
+            # roughly doubles.
+            log.debug("RAW %s [%d] %s", char_uuid[:8], len(payload), payload.hex())
             # r52 firmware: opportunistically decode + persist to ble_r52_frames
             self._maybe_persist_r52(char_uuid, payload)
             for h in handlers:
@@ -253,7 +257,7 @@ class WhoopBLE:
                 except Exception as e:
                     log.debug("imu decode falhou: %s", e)
 
-                log.info(
+                log.debug(
                     "MAVERICK %s seq=%d cmd=%s(%d) result=%s payload=%s",
                     mframe.packet_type_name, mframe.seq,
                     mframe.command_name, mframe.command_byte,
