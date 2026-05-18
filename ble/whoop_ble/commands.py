@@ -151,7 +151,13 @@ def cmd_get_max_protocol_version() -> bytes:         return _enc(Cmd.GET_MAX_PRO
 def cmd_get_hello_harvard() -> bytes:                return _enc(Cmd.GET_HELLO_HARVARD)
 def cmd_get_data_range() -> bytes:                   return _enc(Cmd.GET_DATA_RANGE)
 def cmd_get_advertising_name() -> bytes:             return _enc(Cmd.GET_ADVERTISING_NAME)
-def cmd_get_alarm_time() -> bytes:                   return _enc(Cmd.GET_ALARM_TIME)
+def cmd_get_alarm_time(alarm_index: int = 0) -> bytes:
+    """Query the strap for the configured alarm time.
+
+    Maverick uses REVISION_4 with a 2-byte payload ``[4, alarm_index]``.
+    Decoded from APK: ``xg0/i.java`` ``GetAlarmTimePacket.c()``.
+    """
+    return _enc(Cmd.GET_ALARM_TIME, bytes([4, alarm_index & 0xFF]))
 def cmd_get_research_packet() -> bytes:              return _enc(Cmd.GET_RESEARCH_PACKET)
 
 
@@ -207,14 +213,28 @@ def cmd_set_alarm_time(unix_ts: int, alarm_index: int = 0,
     return _enc(Cmd.SET_ALARM_TIME, payload)
 
 
-def cmd_run_alarm() -> bytes:
-    """Trigger the configured alarm immediately (haptic + LED)."""
-    return _enc(Cmd.RUN_ALARM, bytes([4]))  # revision byte
+def cmd_run_alarm(alarm_index: int = 0) -> bytes:
+    """Trigger the configured alarm immediately (haptic + LED).
+
+    Whoop 5.0 (Maverick) uses REVISION_2: 2-byte payload
+    ``[rev=2, alarm_index]``. Earlier hardware (GEN_4) used REVISION_1
+    with a single byte ``[1]``; we always send the Maverick variant.
+
+    Decoded from APK: ``xg0/e0.java`` ``RunAlarmPacket.b()``.
+    """
+    return _enc(Cmd.RUN_ALARM, bytes([2, alarm_index & 0xFF]))
 
 
-def cmd_disable_alarm() -> bytes:
-    """Cancel the scheduled alarm."""
-    return _enc(Cmd.DISABLE_ALARM, bytes([4]))
+def cmd_disable_alarm(alarm_index: int = 0xFF) -> bytes:
+    """Cancel the scheduled alarm.
+
+    Maverick REVISION_2: 2-byte payload ``[rev=2, alarm_index]``. The
+    APK uses ``0xFF`` (signed -1) to disable all alarms — that's our
+    default. Pass a specific index to disable just that slot.
+
+    Decoded from APK: ``xg0/c.java`` ``DisableAlarmPacket.c()``.
+    """
+    return _enc(Cmd.DISABLE_ALARM, bytes([2, alarm_index & 0xFF]))
 
 
 __all__ = [

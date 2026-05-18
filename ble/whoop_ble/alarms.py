@@ -94,27 +94,29 @@ async def set_alarm(unix_ts: int, alarm_index: int = 0) -> dict:
     return await _with_strap(_do)
 
 
-async def get_alarm() -> dict:
-    """Read current alarm from strap."""
+async def get_alarm(alarm_index: int = 0) -> dict:
+    """Read current alarm from strap for slot ``alarm_index``."""
     async def _do(c):
-        await c.write_cmd(cmd_get_alarm_time())
+        await c.write_cmd(cmd_get_alarm_time(alarm_index=alarm_index))
         await asyncio.sleep(1.0)
-        return {"ok": True, "note": "Check ble_command_responses for the response"}
+        return {"ok": True, "alarm_index": alarm_index,
+                "note": "Check ble_command_responses for the response"}
     return await _with_strap(_do)
 
 
-async def disable_alarm() -> dict:
+async def disable_alarm(alarm_index: int = 0xFF) -> dict:
+    """Cancel one alarm slot (default ``0xFF`` = all slots)."""
     async def _do(c):
-        await c.write_cmd(cmd_disable_alarm())
-        return {"ok": True}
+        await c.write_cmd(cmd_disable_alarm(alarm_index=alarm_index))
+        return {"ok": True, "alarm_index": alarm_index}
     return await _with_strap(_do)
 
 
-async def run_alarm_now() -> dict:
-    """Fire the configured alarm immediately."""
+async def run_alarm_now(alarm_index: int = 0) -> dict:
+    """Fire the configured alarm on slot ``alarm_index`` immediately."""
     async def _do(c):
-        await c.write_cmd(cmd_run_alarm())
-        return {"ok": True}
+        await c.write_cmd(cmd_run_alarm(alarm_index=alarm_index))
+        return {"ok": True, "alarm_index": alarm_index}
     return await _with_strap(_do)
 
 
