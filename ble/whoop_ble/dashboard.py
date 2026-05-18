@@ -432,6 +432,7 @@ HTML = """<!doctype html>
   <div class="btn-row">
     <button class="btn" id="btn_pair" onclick="doPair()">Connect &amp; pair Whoop</button>
     <button class="btn secondary" id="btn_start" onclick="doStart()">Start daemon (already paired)</button>
+    <button class="btn secondary" id="btn_start_boost" onclick="doStart(true)" title="Start the daemon with experimental BLE link tuning (7.5 ms conn interval + 251-byte DLE). Up to 5× faster historical drain but may drop the link on some firmware revisions — only use after a confirmed-working baseline">⚡ Start (boost)</button>
     <button class="btn secondary" id="btn_force_pair" onclick="doPair(true)" title="Force a fresh pair even if BlueZ thinks we're already bonded — use when the strap is in pairing mode (LED solid blue) but auto-connect fails">Force re-pair</button>
     <button class="btn danger" id="btn_stop" onclick="doStop()">Stop daemon</button>
   </div>
@@ -597,7 +598,7 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => activateTab(t.d
 // Setup tab actions
 const pairLog = document.getElementById('pair_log');
 function setBtns(disabled){
-  ['btn_pair','btn_start','btn_stop','btn_force_pair'].forEach(id =>
+  ['btn_pair','btn_start','btn_start_boost','btn_stop','btn_force_pair'].forEach(id =>
     document.getElementById(id).disabled = disabled);
 }
 function appendLog(lines){
@@ -645,11 +646,16 @@ async function doPairManual(){
   setBtns(false);
   refreshSetupStatus();
 }
-async function doStart(){
+async function doStart(boost){
   setBtns(true);
-  appendLog('=== Starting daemon ===');
+  appendLog('=== Starting daemon' + (boost ? ' (BOOST MODE)' : '') + ' ===');
+  if(boost){
+    appendLog('⚡ Boost: requesting 7.5 ms conn interval + 251-byte DLE.');
+    appendLog('   If the link drops repeatedly in ~20 s, use plain "Start daemon" instead.');
+  }
   try{
-    const r = await fetch('/api/start-daemon', {method:'POST'});
+    const r = await fetch('/api/start-daemon' + (boost ? '?boost=1' : ''),
+                          {method:'POST'});
     appendLog((await r.json()).log || []);
   }catch(e){ appendLog('ERROR: ' + e); }
   setBtns(false);
@@ -1356,7 +1362,17 @@ class Handler(BaseHTTPRequestHandler):
             result = self._run_async(pairing.pair_whoop(mac, force=force))
             return self._json(result)
         if u.path == "/api/start-daemon":
-            return self._json(self._run_async(pairing.start_daemon()))
+            boost = False
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 0:
+                    body = json.loads(self.rfile.read(length).decode())
+                    boost = bool(body.get("boost"))
+                if "boost=1" in (u.query or ""):
+                    boost = True
+            except Exception:
+                pass
+            return self._json(self._run_async(pairing.start_daemon(boost=boost)))
         if u.path == "/api/stop-daemon":
             return self._json(self._run_async(pairing.stop_daemon()))
         if u.path == "/api/alarm/set":

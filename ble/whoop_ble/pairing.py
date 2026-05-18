@@ -261,8 +261,14 @@ async def pair_whoop(mac: Optional[str] = None,
     return {"ok": True, "mac": mac, "log": log}
 
 
-async def start_daemon() -> dict:
-    """Launch the whoop_ble.daemon as a background process."""
+async def start_daemon(boost: bool = False) -> dict:
+    """Launch the whoop_ble.daemon as a background process.
+
+    ``boost=True`` enables the aggressive BLE link tuning (7.5 ms conn
+    interval + 251-byte DLE) via the ``WHOOP_BLE_BOOST=1`` env var. This
+    gives a 5× drain speedup but is fragile on some firmware revisions
+    (link drops silently after ~20s on rejection).
+    """
     pid = daemon_pid()
     if pid:
         return {"ok": True, "already_running": True, "pid": pid,
@@ -270,10 +276,12 @@ async def start_daemon() -> dict:
     mac = _read_mac_from_env()
     if not mac:
         return {"ok": False, "log": ["No paired MAC found. Pair first."]}
-    log = [f"Starting daemon with WHOOP_BLE_MAC={mac}..."]
+    log = [f"Starting daemon with WHOOP_BLE_MAC={mac}" + (" + BOOST" if boost else "")]
     env = os.environ.copy()
     env["WHOOP_BLE_MAC"] = mac
     env["PYTHONPATH"] = str(PROJECT_ROOT / "ble")
+    if boost:
+        env["WHOOP_BLE_BOOST"] = "1"
     venv_py = PROJECT_ROOT / ".venv" / "bin" / "python"
     proc = subprocess.Popen(
         [str(venv_py), "-m", "whoop_ble.daemon"],
@@ -287,7 +295,8 @@ async def start_daemon() -> dict:
     await asyncio.sleep(2)
     log.append(f"Daemon PID: {proc.pid}")
     log.append(f"Log: {DAEMON_LOG}")
-    return {"ok": True, "pid": proc.pid, "mac": mac, "log": log}
+    return {"ok": True, "pid": proc.pid, "mac": mac, "log": log,
+            "boost": boost}
 
 
 async def stop_daemon() -> dict:
