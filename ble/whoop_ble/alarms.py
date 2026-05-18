@@ -86,11 +86,11 @@ async def _with_strap(coro_fn):
     raise last_err if last_err else RuntimeError("connect failed")
 
 
-async def set_alarm(unix_ts: int) -> dict:
-    """Schedule alarm for unix_ts."""
+async def set_alarm(unix_ts: int, alarm_index: int = 0) -> dict:
+    """Schedule alarm for unix_ts on slot ``alarm_index`` (default 0)."""
     async def _do(c):
-        await c.write_cmd(cmd_set_alarm_time(unix_ts))
-        return {"ok": True, "scheduled_ts": unix_ts}
+        await c.write_cmd(cmd_set_alarm_time(unix_ts, alarm_index=alarm_index))
+        return {"ok": True, "scheduled_ts": unix_ts, "alarm_index": alarm_index}
     return await _with_strap(_do)
 
 

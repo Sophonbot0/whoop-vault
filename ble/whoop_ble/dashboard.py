@@ -18,6 +18,7 @@ from urllib.parse import urlparse, parse_qs
 
 from whoop_ble import pairing
 from whoop_ble import alarms as alarms_mod
+from whoop_ble import alarm_scheduler as alarm_sched
 from whoop_ble.db import connect as _db_connect
 
 DB = Path(__file__).resolve().parent.parent.parent / "data" / "whoop.db"
@@ -127,6 +128,24 @@ def _start_bg_parser():
     t = threading.Thread(target=_background_parser, daemon=True, name="bg_parser")
     t.start()
     return t
+
+
+def _alarm_push_sync(idx: int, unix_ts: int) -> dict:
+    """Synchronous wrapper used by the alarm-scheduler thread to push a
+    ``SET_ALARM_TIME`` for a given slot. Reuses ``_alarm_op`` so the
+    daemon is paused/restarted around the BLE write.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            _alarm_op(alarms_mod.set_alarm, unix_ts, idx)
+        )
+    finally:
+        loop.close()
+
+
+def _start_alarm_scheduler():
+    return alarm_sched.start_scheduler_thread(DB, _alarm_push_sync, interval=60.0)
 
 
 # In-memory log of the last alarm operation (polled by the UI via /api/alarm/status)
@@ -258,6 +277,7 @@ HTML = """<!doctype html>
 <div class="tabs">
   <div class="tab active" data-tab="setup">Setup &amp; Pairing</div>
   <div class="tab" data-tab="live">Live</div>
+  <div class="tab" data-tab="history">History</div>
   <div class="tab" data-tab="alarms">Alarms</div>
 </div>
 
@@ -400,6 +420,47 @@ HTML = """<!doctype html>
 
 </div><!-- /tab-setup -->
 
+<div class="tab-content" id="tab-history">
+  <h2>Historical data — by day</h2>
+  <div class="card" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+    <label style="color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:1px">Day</label>
+    <input id="hist_date" type="date"
+           style="padding:10px;background:#0a0d12;border:1px solid var(--grid);
+           border-radius:8px;color:var(--text);font-family:monospace"/>
+    <button class="btn secondary" onclick="loadHistoryDay()">Load</button>
+    <span style="flex:1"></span>
+    <span class="meta" id="hist_summary">—</span>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="label">Days with data</div>
+    <div id="hist_days_list" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px"></div>
+  </div>
+  <div class="grid-4" style="margin-top:14px">
+    <div class="card"><div class="label">HR (live captures)</div>
+      <div class="value" style="color:var(--hr);font-size:32px"><span id="hist_hr_avg">—</span></div>
+      <div class="meta" id="hist_hr_meta">—</div></div>
+    <div class="card"><div class="label">Skin temp</div>
+      <div class="value" style="color:var(--temp);font-size:32px"><span id="hist_temp_avg">—</span></div>
+      <div class="meta" id="hist_temp_meta">—</div></div>
+    <div class="card"><div class="label">Motion</div>
+      <div class="value" style="color:var(--motion);font-size:32px"><span id="hist_mot_avg">—</span></div>
+      <div class="meta" id="hist_mot_meta">—</div></div>
+    <div class="card"><div class="label">On-body</div>
+      <div class="value" style="color:var(--accent);font-size:32px"><span id="hist_onbody">—</span><span class="unit">min</span></div>
+      <div class="meta" id="hist_onbody_meta">—</div></div>
+  </div>
+  <h2>HR over day</h2>
+  <canvas id="histHrChart" height="80"></canvas>
+  <h2>Skin temperature</h2>
+  <canvas id="histTempChart" height="80"></canvas>
+  <h2>Motion intensity</h2>
+  <canvas id="histMotChart" height="80"></canvas>
+  <h2>Activity score</h2>
+  <canvas id="histActChart" height="80"></canvas>
+  <h2>Events on this day</h2>
+  <div class="card"><pre id="hist_events">—</pre></div>
+</div><!-- /tab-history -->
+
 <div class="tab-content" id="tab-alarms">
   <h2>Alarms</h2>
   <div class="card">
@@ -425,6 +486,46 @@ HTML = """<!doctype html>
     </div>
   </div>
   <div class="pair-log" id="pair_log_alarms" style="margin-top:16px">Ready.</div>
+
+  <h2>Recurring schedules</h2>
+  <div class="card">
+    <div class="meta">The strap firmware accepts a single absolute timestamp per
+    <code>alarm_index</code> slot. Weekday repeats are managed locally — a
+    background reconciler runs every minute and re-programs the strap with
+    the next matching datetime as days roll forward. Multi-slot support
+    depends on the firmware (use the <em>Probe slots</em> button below to
+    discover how many your strap accepts; slot 0 is always safe).</div>
+
+    <div id="sched_list" style="margin-top:18px"></div>
+
+    <h3 style="color:var(--mute);font-size:13px;text-transform:uppercase;letter-spacing:1.5px;margin-top:22px">Add / edit schedule</h3>
+    <div class="btn-row" style="margin-top:8px;align-items:center">
+      <label class="meta">Slot</label>
+      <input id="s_idx" type="number" min="0" max="15" value="0" style="width:60px;padding:8px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text);font-family:monospace"/>
+      <label class="meta">Label</label>
+      <input id="s_label" placeholder="Wake-up" style="flex:1;padding:8px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text)"/>
+      <label class="meta">Time</label>
+      <input id="s_time" type="time" value="07:00" style="padding:8px;background:#0a0d12;border:1px solid var(--grid);border-radius:6px;color:var(--text);font-family:monospace"/>
+    </div>
+    <div class="btn-row" style="margin-top:10px;align-items:center">
+      <label class="meta" style="margin-right:6px">Repeat on:</label>
+      <span id="s_days" style="display:flex;gap:6px">
+        <label class="badge" data-d="0" style="cursor:pointer">Mon</label>
+        <label class="badge" data-d="1" style="cursor:pointer">Tue</label>
+        <label class="badge" data-d="2" style="cursor:pointer">Wed</label>
+        <label class="badge" data-d="3" style="cursor:pointer">Thu</label>
+        <label class="badge" data-d="4" style="cursor:pointer">Fri</label>
+        <label class="badge" data-d="5" style="cursor:pointer">Sat</label>
+        <label class="badge" data-d="6" style="cursor:pointer">Sun</label>
+      </span>
+      <span style="flex:1"></span>
+      <label class="meta"><input id="s_enabled" type="checkbox" checked/> enabled</label>
+    </div>
+    <div class="btn-row" style="margin-top:14px">
+      <button class="btn" onclick="schedUpsert()">Save schedule</button>
+      <button class="btn secondary" onclick="schedReconcile()">Reconcile now</button>
+    </div>
+  </div>
 </div><!-- /tab-alarms -->
 <script>
 // Tabs
@@ -685,6 +786,176 @@ async function poll(){
   }catch(e){console.error(e)}
 }
 poll(); setInterval(poll,1000);
+
+// ============ History tab ============
+let histHrChart, histTempChart, histMotChart, histActChart;
+function ensureHistCharts(){
+  if(histHrChart) return;
+  histHrChart = mkChart('histHrChart','rgb(255,56,96)','HR (bpm)',40,160);
+  histTempChart = mkChart('histTempChart','rgb(62,193,255)','Skin temp (°C)',28,36);
+  histMotChart = mkChart('histMotChart','rgb(62,255,139)','Motion intensity',0,0.5);
+  histActChart = mkChart('histActChart','rgb(195,116,255)','Activity score',0,255);
+}
+async function refreshHistDays(){
+  try{
+    const r = await (await fetch('/api/history/days')).json();
+    const box = document.getElementById('hist_days_list');
+    box.innerHTML = '';
+    if(!r.days || !r.days.length){
+      box.innerHTML = '<span class="meta">No historical data yet — let the drain run.</span>';
+      return;
+    }
+    r.days.forEach(d => {
+      const el = document.createElement('span');
+      el.className = 'badge';
+      el.style.cursor = 'pointer';
+      el.textContent = d.date + ' (' + d.chunks + ')';
+      el.onclick = () => { document.getElementById('hist_date').value = d.date; loadHistoryDay(); };
+      box.appendChild(el);
+    });
+    if(!document.getElementById('hist_date').value){
+      document.getElementById('hist_date').value = r.days[0].date;
+    }
+  }catch(e){ console.error(e); }
+}
+async function loadHistoryDay(){
+  const d = document.getElementById('hist_date').value;
+  if(!d){ return; }
+  ensureHistCharts();
+  try{
+    const r = await (await fetch('/api/history/day?date=' + d)).json();
+    if(!r.ok){
+      document.getElementById('hist_summary').textContent = 'Error: ' + r.error;
+      return;
+    }
+    const fmt = ts => new Date(ts*1000).toLocaleTimeString();
+    histHrChart.data.labels = r.hr.map(p => fmt(p.ts));
+    histHrChart.data.datasets[0].data = r.hr.map(p => p.v);
+    histHrChart.update('none');
+    histTempChart.data.labels = r.temp.map(p => fmt(p.ts));
+    histTempChart.data.datasets[0].data = r.temp.map(p => p.v);
+    histTempChart.update('none');
+    histMotChart.data.labels = r.motion.map(p => fmt(p.ts));
+    histMotChart.data.datasets[0].data = r.motion.map(p => p.v);
+    histMotChart.update('none');
+    histActChart.data.labels = r.activity.map(p => fmt(p.ts));
+    histActChart.data.datasets[0].data = r.activity.map(p => p.v);
+    histActChart.update('none');
+    const s = r.summary || {};
+    const setAgg = (id, metaId, agg, unit) => {
+      document.getElementById(id).textContent = agg ? agg.avg : '—';
+      document.getElementById(metaId).textContent = agg
+        ? (agg.min + '/' + agg.avg + '/' + agg.max + ' min/avg/max  ·  ' + agg.n + ' samples')
+        : 'no data';
+    };
+    setAgg('hist_hr_avg','hist_hr_meta', s.hr);
+    setAgg('hist_temp_avg','hist_temp_meta', s.temp);
+    setAgg('hist_mot_avg','hist_mot_meta', s.motion);
+    document.getElementById('hist_onbody').textContent = s.on_body_minutes || 0;
+    document.getElementById('hist_onbody_meta').textContent =
+      (s.samples || 0) + ' K18 chunks decoded';
+    document.getElementById('hist_summary').textContent =
+      d + '  ·  ' + (s.samples || 0) + ' samples';
+    if(r.events && r.events.length){
+      document.getElementById('hist_events').textContent =
+        r.events.map(e =>
+          new Date(e.ts*1000).toLocaleTimeString() + '  '
+          + (e.name||'').padEnd(30,' ') + (e.extra||'')).join('\\n');
+    } else {
+      document.getElementById('hist_events').textContent = '(no notable events)';
+    }
+  }catch(e){
+    document.getElementById('hist_summary').textContent = 'Error: ' + e;
+  }
+}
+
+// ============ Schedules ============
+function getSelectedMask(){
+  let m = 0;
+  document.querySelectorAll('#s_days .badge').forEach(b => {
+    if(b.classList.contains('ok')) m |= (1 << parseInt(b.dataset.d));
+  });
+  return m;
+}
+function setSelectedMask(m){
+  document.querySelectorAll('#s_days .badge').forEach(b => {
+    const bit = parseInt(b.dataset.d);
+    if(m & (1 << bit)) b.classList.add('ok'); else b.classList.remove('ok');
+  });
+}
+document.querySelectorAll('#s_days .badge').forEach(b => {
+  b.onclick = () => b.classList.toggle('ok');
+});
+async function refreshSchedules(){
+  try{
+    const r = await (await fetch('/api/schedules')).json();
+    const box = document.getElementById('sched_list');
+    if(!r.schedules || !r.schedules.length){
+      box.innerHTML = '<div class="meta">No recurring schedules yet.</div>';
+      return;
+    }
+    box.innerHTML = r.schedules.map(s => {
+      const days = (s.weekdays && s.weekdays.length) ? s.weekdays.join(' ') : 'every day';
+      const nextIso = s.last_scheduled_iso || '—';
+      const cls = s.enabled ? 'ok' : 'warn';
+      return '<div class="stat"><span class="stat-label">'
+        + '<span class="badge ' + cls + '">slot ' + s.idx + '</span> '
+        + (s.label || '(no label)')
+        + ' · ' + String(s.hh).padStart(2,'0') + ':' + String(s.mm).padStart(2,'0')
+        + ' · ' + days + '</span>'
+        + '<span class="stat-value">next: ' + nextIso
+        + ' <button class="btn secondary" style="padding:6px 10px;font-size:11px;margin-left:8px" onclick="schedEdit(' + s.idx + ',' + JSON.stringify(s.label).replace(/"/g,'&quot;') + ',' + s.hh + ',' + s.mm + ',' + s.weekday_mask + ',' + (s.enabled?1:0) + ')">edit</button>'
+        + ' <button class="btn danger" style="padding:6px 10px;font-size:11px" onclick="schedDel(' + s.idx + ')">delete</button>'
+        + '</span></div>';
+    }).join('');
+  }catch(e){ console.error(e); }
+}
+function schedEdit(idx, label, hh, mm, mask, enabled){
+  document.getElementById('s_idx').value = idx;
+  document.getElementById('s_label').value = label;
+  document.getElementById('s_time').value =
+    String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+  setSelectedMask(mask);
+  document.getElementById('s_enabled').checked = !!enabled;
+}
+async function schedUpsert(){
+  const t = document.getElementById('s_time').value || '07:00';
+  const [hh, mm] = t.split(':').map(Number);
+  const body = {
+    idx: parseInt(document.getElementById('s_idx').value) || 0,
+    label: document.getElementById('s_label').value || '',
+    hh, mm,
+    weekday_mask: getSelectedMask(),
+    enabled: document.getElementById('s_enabled').checked,
+  };
+  const r = await fetch('/api/schedule/upsert',
+    {method:'POST', headers:{'Content-Type':'application/json'},
+     body: JSON.stringify(body)});
+  const j = await r.json();
+  appendLog('schedule upsert: ' + JSON.stringify(j));
+  refreshSchedules();
+}
+async function schedDel(idx){
+  if(!confirm('Delete slot ' + idx + '?')) return;
+  await fetch('/api/schedule/delete',
+    {method:'POST', headers:{'Content-Type':'application/json'},
+     body: JSON.stringify({idx})});
+  refreshSchedules();
+}
+async function schedReconcile(){
+  appendLog('Reconciling now...');
+  await fetch('/api/schedule/reconcile', {method:'POST'});
+  setTimeout(refreshSchedules, 2000);
+}
+
+// Wire up tab-switch hooks
+const _oldActivate = activateTab;
+activateTab = function(name){
+  _oldActivate(name);
+  if(name === 'history'){ refreshHistDays(); loadHistoryDay(); }
+  if(name === 'alarms'){ refreshSchedules(); }
+};
+refreshSchedules();
 </script></body></html>
 """
 
@@ -766,13 +1037,196 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "alarm op already running"})
             _alarm_op_threaded(alarms_mod.run_alarm_now)
             return self._json({"ok": True, "started": True, "poll": "/api/alarm/status"})
+        if u.path == "/api/schedule/upsert":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode()) if length else {}
+            try:
+                res = alarm_sched.upsert_schedule(
+                    DB,
+                    int(body["idx"]),
+                    str(body.get("label", "")),
+                    int(body["hh"]),
+                    int(body["mm"]),
+                    int(body.get("weekday_mask", 0)),
+                    bool(body.get("enabled", True)),
+                )
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, code=400)
+            return self._json(res)
+        if u.path == "/api/schedule/delete":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode()) if length else {}
+            try:
+                res = alarm_sched.delete_schedule(DB, int(body["idx"]))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, code=400)
+            return self._json(res)
+        if u.path == "/api/schedule/reconcile":
+            # Manual reconcile trigger — runs in a thread, returns immediately
+            def _run():
+                try:
+                    alarm_sched.reconcile_once(DB, _alarm_push_sync)
+                except Exception as ex:
+                    print(f"[ERR] manual reconcile: {ex}", flush=True)
+            threading.Thread(target=_run, daemon=True).start()
+            return self._json({"ok": True, "started": True})
         self.send_response(404)
         self.end_headers()
+
+    def _history_day(self, date_s: str) -> None:
+        """Return all K18 series + event timeline for the given local date.
+
+        ``date_s`` format: ``YYYY-MM-DD`` (local timezone). Buckets data
+        into 1-minute aggregates for charts and returns counts/min/max.
+        """
+        conn = sqlite3.connect(str(DB))
+        # Time bounds: that calendar day in local tz
+        try:
+            day_start = int(datetime.strptime(date_s, "%Y-%m-%d").timestamp())
+        except Exception:
+            conn.close()
+            return self._json({"ok": False, "error": "bad date"}, code=400)
+        day_end = day_start + 86400
+
+        # K18 series, downsampled by minute
+        rows = conn.execute(
+            "SELECT ts, "
+            " json_extract(value_json,'$.skin_temp_hp_c'), "
+            " json_extract(value_json,'$.motion'), "
+            " json_extract(value_json,'$.activity_score'), "
+            " json_extract(value_json,'$.on_body') "
+            "FROM ble_historical_parsed WHERE record_type='K18' "
+            " AND ts>=? AND ts<? ORDER BY ts ASC",
+            (day_start, day_end)
+        ).fetchall()
+
+        hr, temp, motion, act, on_body = [], [], [], [], []
+        hr_vals, temp_vals, mot_vals = [], [], []
+        on_body_count = 0
+        total_count = 0
+        for ts, t, m, a, ob in rows:
+            total_count += 1
+            if t is not None and 25 <= t <= 40:
+                temp.append({"ts": ts, "v": round(t, 2)}); temp_vals.append(t)
+            if m is not None:
+                motion.append({"ts": ts, "v": round(m, 3)}); mot_vals.append(m)
+            if a is not None:
+                act.append({"ts": ts, "v": a})
+            on_body.append({"ts": ts, "v": 1 if ob else 0})
+            if ob:
+                on_body_count += 1
+        # K18 chunks aren't fixed interval; estimate on-body minutes as a
+        # fraction of the day's covered span.
+        if rows and total_count > 0:
+            span_s = max(rows[-1][0] - rows[0][0], 1)
+            on_body_seconds = int(span_s * (on_body_count / total_count))
+        else:
+            on_body_seconds = 0
+
+        # HR comes from live BLE captures (not in K18); fetch separately
+        hr_rows = conn.execute(
+            "SELECT ts, bpm FROM ble_hr_standard "
+            "WHERE ts>=? AND ts<? ORDER BY ts ASC",
+            (day_start, day_end)
+        ).fetchall()
+        for ts, bpm in hr_rows:
+            if bpm and 25 <= bpm <= 220:
+                hr.append({"ts": ts, "v": bpm}); hr_vals.append(bpm)
+
+        # Events that fired during the day
+        ev_rows = conn.execute(
+            "SELECT rx_ts, event_name, value_json FROM ble_events_v2 "
+            "WHERE rx_ts>=? AND rx_ts<? "
+            "  AND event_name NOT IN ('KEEPALIVE','FW_STATUS','STRAP_CONDITION_REPORT',"
+            "    'GENERIC_FIRMWARE_EVENT','UNKNOWN_110') "
+            "ORDER BY rx_ts ASC",
+            (day_start, day_end)
+        ).fetchall()
+        conn.close()
+
+        def _agg(vals):
+            if not vals:
+                return None
+            return {
+                "min": round(min(vals), 2),
+                "max": round(max(vals), 2),
+                "avg": round(sum(vals)/len(vals), 2),
+                "n": len(vals),
+            }
+
+        body = {
+            "ok": True,
+            "date": date_s,
+            "day_start": day_start,
+            "hr": hr,
+            "temp": temp,
+            "motion": motion,
+            "activity": act,
+            "on_body": on_body,
+            "summary": {
+                "hr": _agg(hr_vals),
+                "temp": _agg(temp_vals),
+                "motion": _agg(mot_vals),
+                "on_body_minutes": int(on_body_seconds / 60),
+                "samples": total_count,
+                "chunks": total_count,
+            },
+            "events": [
+                {"ts": r[0], "name": r[1],
+                 "extra": _event_extra_summary(r[2])}
+                for r in ev_rows
+            ],
+        }
+        return self._json(body)
 
     def do_GET(self):
         u = urlparse(self.path)
         if u.path == "/api/alarm/status":
             return self._json(_alarm_state)
+        if u.path == "/api/schedules":
+            return self._json({"ok": True, "schedules": alarm_sched.list_schedules(DB)})
+        if u.path == "/api/history/days":
+            conn = sqlite3.connect(str(DB))
+            rows = conn.execute(
+                "SELECT date(ts,'unixepoch','localtime') d, "
+                "       COUNT(DISTINCT json_extract(value_json,'$.record_id')) chunks,"
+                "       MIN(ts), MAX(ts) "
+                "FROM ble_historical_parsed WHERE record_type='K18' "
+                "GROUP BY d ORDER BY d DESC"
+            ).fetchall()
+            conn.close()
+            return self._json({"ok": True, "days": [
+                {"date": r[0], "chunks": r[1],
+                 "first_ts": r[2], "last_ts": r[3]} for r in rows
+            ]})
+        if u.path == "/api/history/day":
+            q = parse_qs(u.query)
+            date_s = q.get("date", [""])[0]
+            if not date_s:
+                return self._json({"ok": False, "error": "date required"}, code=400)
+            return self._history_day(date_s)
+            return self._json({"ok": True, "schedules": alarm_sched.list_schedules(DB)})
+        if u.path == "/api/history/days":
+            # Return list of dates that have K18 data + per-day counts.
+            conn = sqlite3.connect(str(DB))
+            rows = conn.execute(
+                "SELECT date(ts,'unixepoch','localtime') d, "
+                "       COUNT(DISTINCT json_extract(value_json,'$.record_id')) chunks,"
+                "       MIN(ts), MAX(ts) "
+                "FROM ble_historical_parsed WHERE record_type='K18' "
+                "GROUP BY d ORDER BY d DESC"
+            ).fetchall()
+            conn.close()
+            return self._json({"ok": True, "days": [
+                {"date": r[0], "chunks": r[1],
+                 "first_ts": r[2], "last_ts": r[3]} for r in rows
+            ]})
+        if u.path == "/api/history/day":
+            q = parse_qs(u.query)
+            date_s = q.get("date", [""])[0]
+            if not date_s:
+                return self._json({"ok": False, "error": "date required"}, code=400)
+            return self._history_day(date_s)
         if u.path == "/api/status":
             base = pairing.status()
             # Latest alarm from event log
@@ -955,4 +1409,5 @@ if __name__ == "__main__":
     _ensure_db()
     print(f"dashboard: http://127.0.0.1:{port}/  (db={DB})")
     _start_bg_parser()
+    _start_alarm_scheduler()
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
