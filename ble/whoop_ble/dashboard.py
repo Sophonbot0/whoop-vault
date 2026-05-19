@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import sqlite3
 import threading
 import time
@@ -15,6 +17,13 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+
+# Capture INFO from whoop_ble.alarms / alarm_scheduler / pairing into the
+# dashboard log so the user can see exactly what each BLE op is doing.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 
 from whoop_ble import pairing
 from whoop_ble import alarms as alarms_mod
@@ -451,46 +460,61 @@ HTML = """<!doctype html>
   </div>
 
   <div class="btn-row">
-    <button class="btn" id="btn_pair" onclick="doPair()">Connect &amp; pair Whoop</button>
-    <button class="btn secondary" id="btn_start" onclick="doStart()">Start daemon (already paired)</button>
-    <button class="btn secondary" id="btn_start_boost" onclick="doStart(true)" title="Start the daemon with experimental BLE link tuning (7.5 ms conn interval + 251-byte DLE). Up to 5× faster historical drain but may drop the link on some firmware revisions — only use after a confirmed-working baseline">⚡ Start (boost)</button>
-    <button class="btn secondary" id="btn_force_pair" onclick="doPair(true)" title="Force a fresh pair even if BlueZ thinks we're already bonded — use when the strap is in pairing mode (LED solid blue) but auto-connect fails">Force re-pair</button>
-    <button class="btn danger" id="btn_stop" onclick="doStop()">Stop daemon</button>
+    <button class="btn" id="btn_pair" onclick="doPair()"
+            style="font-size:16px;padding:16px 28px;font-weight:600">
+      Connect Whoop
+    </button>
+    <button class="btn danger" id="btn_stop" onclick="doStop()">Disconnect</button>
   </div>
 
   <div class="card" style="margin-top:14px;background:#0e1218;border-left:3px solid var(--accent)">
-    <div class="label">Button cheat-sheet</div>
+    <div class="label">How it works (like the official app)</div>
     <div class="meta" style="margin-top:8px;line-height:1.7">
-      <strong style="color:var(--text)">Connect &amp; pair Whoop</strong> — the normal happy path.
-      Scans for the strap, pairs &amp; bonds in BlueZ, then auto-starts the daemon.
-      Safe to click any time; if you're already bonded it just starts the daemon.
+      <strong style="color:var(--text)">Just click Connect.</strong>
+      It detects whether the strap is already bonded and does the right thing automatically:
       <br><br>
-      <strong style="color:var(--text)">Start daemon (already paired)</strong> — only starts the
-      collection daemon, no pairing. Use when you re-opened the dashboard
-      and the strap is already bonded.
-      <br><br>
-      <strong style="color:var(--text)">⚡ Start (boost)</strong> — same as above, but pushes the
-      BLE link into high-throughput mode (7.5 ms conn interval +
-      251-byte data length extension). Historical-drain throughput goes
-      from ~12 chunks/s to <strong>~22 chunks/s</strong> (~80% faster catch-up),
-      matching the official Whoop app's drain speed.
+      • <strong style="color:var(--text)">First time / new strap:</strong> hold the side button
+      on the Whoop ~5 s until the LED flashes blue rapidly (pairing mode),
+      then click Connect. Bond is created once and persists across reboots.
       <br>
-      <span style="color:var(--warn,#ffd13e)">⚠️ Trade-off:</span> some
-      firmware revisions silently drop the link ~20 s after this
-      negotiation. If you see "sessão falhou" appearing every minute in
-      the log, use the plain <em>Start daemon</em> instead.
+      • <strong style="color:var(--text)">Already bonded (normal use):</strong> click Connect — the
+      daemon wakes the strap via direct-connect and streams immediately
+      (this is the same flow the Android APK uses via
+      <code>connectGatt(autoConnect=true)</code>).
+      <br>
+      • <strong style="color:var(--text)">Out of range:</strong> the daemon stays running and
+      auto-reconnects when the strap comes back. No clicks needed.
       <br><br>
-      <strong style="color:var(--text)">Force re-pair</strong> — wipes the local bond and runs the
-      full pairing flow again. Click this only when the strap is in
-      pairing mode (LED solid blue) but normal Connect keeps failing
-      (e.g. after a BlueZ reset or firmware update).
-      <br><br>
-      <strong style="color:var(--text)">Stop daemon</strong> — gracefully shuts down the collection
-      process. Use before unplugging the controller or rebooting BlueZ.
+      <strong style="color:var(--text)">Disconnect</strong> — stops the daemon. Bond is preserved
+      so the next Connect is instant.
     </div>
   </div>
 
-  <div class="pair-log" id="pair_log">Ready. Follow steps 1–3 then click "Connect".</div>
+  <details style="margin-top:14px">
+    <summary style="cursor:pointer;color:var(--mute);font-size:12px;
+                    text-transform:uppercase;letter-spacing:1.5px;padding:6px 0">
+      Advanced (troubleshooting)
+    </summary>
+    <div class="btn-row" style="margin-top:10px">
+      <button class="btn secondary" id="btn_force_pair" onclick="doPair(true)"
+              title="Wipe the BlueZ bond and re-pair from scratch. Use only when the strap is in pairing mode (LED rapid blue) and normal Connect fails after several tries.">
+        Force re-pair (LED blue)
+      </button>
+      <button class="btn secondary" id="btn_start_boost" onclick="doStart(true)"
+              title="Restart daemon with 7.5 ms conn interval + DLE — up to 5× faster historical drain. May drop on some firmware revs.">
+        ⚡ Boost mode
+      </button>
+    </div>
+    <div class="meta" style="margin-top:10px;line-height:1.6;font-size:11px">
+      <strong>Force re-pair:</strong> only when the bond is broken or you switched straps.
+      Strap must be in pairing mode (hold button ~5 s, LED blue rapid).
+      <br>
+      <strong>Boost mode:</strong> aggressive BLE link tuning for faster historical drain
+      (~22 chunks/s vs ~12). If link drops every minute, don't use this.
+    </div>
+  </details>
+
+  <div class="pair-log" id="pair_log" style="margin-top:14px">Ready. Click Connect.</div>
 
   <h2>Manual MAC (advanced)</h2>
   <div class="card">
@@ -652,34 +676,61 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => activateTab(t.d
 // Setup tab actions
 const pairLog = document.getElementById('pair_log');
 function setBtns(disabled){
-  ['btn_pair','btn_start','btn_start_boost','btn_stop','btn_force_pair'].forEach(id =>
-    document.getElementById(id).disabled = disabled);
+  ['btn_pair','btn_start_boost','btn_stop','btn_force_pair'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.disabled = disabled;
+  });
 }
 function appendLog(lines){
   if(Array.isArray(lines)) lines = lines.join('\\n');
   pairLog.textContent = (pairLog.textContent + '\\n' + lines).slice(-4000);
   pairLog.scrollTop = pairLog.scrollHeight;
 }
+let pairStartTs = 0;
+let pairTickHandle = null;
+function startPairTicker(){
+  pairStartTs = Date.now();
+  if(pairTickHandle) clearInterval(pairTickHandle);
+  pairTickHandle = setInterval(() => {
+    const elapsed = ((Date.now() - pairStartTs) / 1000).toFixed(0);
+    document.getElementById('btn_pair').textContent =
+      'Connecting… (' + elapsed + 's)';
+  }, 500);
+}
+function stopPairTicker(){
+  if(pairTickHandle){ clearInterval(pairTickHandle); pairTickHandle = null; }
+  document.getElementById('btn_pair').textContent = 'Connect Whoop';
+}
 async function doPair(force){
   setBtns(true);
-  appendLog('=== Starting pairing flow ===' + (force ? ' (FORCE re-pair)' : ''));
+  startPairTicker();
+  appendLog('=== ' + (force ? 'FORCE re-pair' : 'Connect') + ' started ===');
+  if(force){
+    appendLog('⚠ Make sure the strap LED is flashing BLUE rapidly');
+    appendLog('  (hold the side button ~5s if not). Otherwise this will time out.');
+  }
   try{
     const r = await fetch('/api/pair' + (force ? '?force=1' : ''),
                           {method:'POST'});
     const j = await r.json();
     appendLog(j.log || []);
-    if(j.ok && j.already_paired){
-      appendLog('ℹ️ Strap already paired & bonded — nothing to do. '
-              + 'If the strap is in pairing mode but the bond is half-broken, '
-              + 'click "Force re-pair" instead.');
-    } else {
-      appendLog(j.ok ? '✓ Paired. Starting daemon...' : '✗ Pairing failed.');
-    }
     if(j.ok){
-      const s = await fetch('/api/start-daemon', {method:'POST'});
-      appendLog((await s.json()).log || []);
+      appendLog('✓ Connected. Streaming HR + chunks.');
+    } else {
+      // Detect AuthenticationTimeout = strap not in pairing mode
+      const logTxt = (j.log || []).join(' ');
+      if(/AuthenticationTimeout|Failed to pair/i.test(logTxt)){
+        appendLog('');
+        appendLog('✗ Strap refused pairing.');
+        appendLog('  → Hold the side button on your Whoop for ~5 seconds');
+        appendLog('    until the LED flashes BLUE rapidly (pairing mode),');
+        appendLog('    then click "Force re-pair (LED blue)" under Advanced.');
+      } else {
+        appendLog('✗ Failed: ' + (j.error || 'see log above'));
+      }
     }
   }catch(e){ appendLog('ERROR: ' + e); }
+  stopPairTicker();
   setBtns(false);
   refreshSetupStatus();
 }
@@ -1933,5 +1984,15 @@ if __name__ == "__main__":
     _ensure_db()
     print(f"dashboard: http://127.0.0.1:{port}/  (db={DB})")
     _start_bg_parser()
-    _start_alarm_scheduler()
+    # Scheduler is opt-in via WHOOP_ALARM_SCHEDULER=1. When enabled it
+    # periodically pushes recurring alarms to the strap (stopping/restarting
+    # the daemon every cycle), which under some BlueZ revisions causes
+    # InProgress / TimeoutError races. The Reconcile-now button on the
+    # Alarms tab triggers a one-shot reconcile when the user actually
+    # needs an alarm to be programmed.
+    if os.environ.get("WHOOP_ALARM_SCHEDULER") == "1":
+        _start_alarm_scheduler()
+    else:
+        print("alarm scheduler disabled (set WHOOP_ALARM_SCHEDULER=1 to enable; "
+              "use the Reconcile-now button for manual sync)")
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

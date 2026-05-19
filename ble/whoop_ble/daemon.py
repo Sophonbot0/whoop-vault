@@ -315,12 +315,28 @@ async def main() -> int:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                # APK-style auto-reconnect: cap backoff at 5 s so a strap
+                # coming back in range never waits more than 5 s. The
+                # `client.py` connect loop itself spends ~12-45 s per
+                # attempt, so we don't hammer the radio.
                 log.warning("sessão falhou: %s [%s] — reconnect em %.1fs",
                             e, type(e).__name__, backoff)
+                # Best-effort cleanup of stuck BlueZ state between attempts.
+                msg = str(e)
+                if "InProgress" in msg or "in progress" in msg.lower():
+                    import subprocess as _sp
+                    try:
+                        _sp.run(["bluetoothctl", "--timeout", "1",
+                                 "scan", "off"], timeout=4,
+                                capture_output=True)
+                        _sp.run(["bluetoothctl", "disconnect", mac],
+                                timeout=4, capture_output=True)
+                    except Exception:
+                        pass
             if stop.is_set():
                 break
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60.0)
+            backoff = min(backoff * 1.5, 5.0)
     finally:
         conn.commit()
         conn.close()

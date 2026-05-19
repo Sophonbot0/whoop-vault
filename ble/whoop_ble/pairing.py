@@ -184,16 +184,25 @@ async def pair_whoop(mac: Optional[str] = None,
             bonded = "Bonded: yes" in info
             paired = "Paired: yes" in info
             if bonded and paired:
-                add(f"Strap {saved} already paired & bonded — skipping re-pair.")
+                add(f"Strap {saved} already paired & bonded.")
+                # Stop daemon (if running) so daemon restarts fresh and runs
+                # its own bonded fast-path (bluetoothctl connect → Bleak).
                 pid = daemon_pid()
                 if pid:
-                    add(f"Daemon already running (PID {pid}).")
-                    return {"ok": True, "mac": saved, "log": log,
-                            "already_paired": True}
+                    add(f"  stopping running daemon (PID {pid})")
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        await asyncio.sleep(3)
+                    except Exception:
+                        pass
                 if mac:
                     _write_mac_to_env(saved)
-                return {"ok": True, "mac": saved, "log": log,
-                        "already_paired": True}
+                add("  → starting daemon (handles wake + GATT internally)")
+                start_res = await start_daemon()
+                log.extend(start_res.get("log", []))
+                return {"ok": start_res.get("ok", False), "mac": saved,
+                        "log": log, "already_paired": True,
+                        "daemon_started": start_res.get("ok", False)}
             else:
                 add(f"  bond half-state (Paired={paired} Bonded={bonded}) — "
                     "doing full re-pair")
@@ -234,31 +243,60 @@ async def pair_whoop(mac: Optional[str] = None,
     await asyncio.sleep(0.5)
 
     add(f"Pairing {mac}...")
-    rc, out = await _bluetoothctl(
-        "power on", "agent NoInputNoOutput", "default-agent",
-        "scan le",
-        f"pair {mac}",
-        timeout=45.0,
-    )
+    # CRITICAL: bluetoothctl requires the device to be currently discovered
+    # (live in its scan cache) before `pair` works. We run scan + sleep +
+    # pair in one bluetoothctl session via an inline python sleep wrapper
+    # — using a sub-shell so stdin sequencing is correct.
+    rc, out = await _run([
+        "bash", "-c",
+        f"""(
+          echo 'power on'
+          echo 'agent NoInputNoOutput'
+          echo 'default-agent'
+          echo 'scan le'
+          sleep 10
+          echo 'pair {mac}'
+          sleep 30
+          echo 'trust {mac}'
+          sleep 1
+          echo 'info {mac}'
+          echo 'quit'
+        ) | bluetoothctl"""
+    ], timeout=60.0)
     if "Pairing successful" in out or "AlreadyExists" in out:
         add("  ✓ pairing successful")
+    elif "AuthenticationTimeout" in out or "AuthenticationFailed" in out:
+        add("  ✗ strap refused pairing (AuthenticationTimeout)")
+        add("    → hold the side button on the Whoop ~5 s until LED")
+        add("      flashes BLUE rapidly, then try again.")
+        return {"ok": False, "mac": mac, "log": log,
+                "error": "strap_not_in_pairing_mode"}
     elif "Failed" in out:
         add(f"  ✗ pairing failed:\n{out[-400:]}")
-        return {"ok": False, "mac": mac, "log": log}
+        return {"ok": False, "mac": mac, "log": log,
+                "error": "pair_failed"}
     else:
-        # Best-effort; bluetoothctl often returns 0 even on partial success
         add(f"  bluetoothctl output: {out[-200:].strip()}")
 
-    add(f"Connecting to {mac}...")
-    rc, out = await _bluetoothctl(f"connect {mac}", timeout=20.0)
-    if "Connection successful" in out:
-        add("  ✓ connected")
-    else:
-        add(f"  (info: {out[-200:].strip()})")
+    # Verify bond actually exists before claiming success
+    rc, info = await _bluetoothctl(f"info {mac}", timeout=5.0)
+    if "Bonded: yes" not in info or "Paired: yes" not in info:
+        add("  ✗ bond verification failed after pair — no Paired+Bonded flags")
+        return {"ok": False, "mac": mac, "log": log,
+                "error": "bond_not_established"}
+    add("  ✓ bond verified (Paired+Bonded)")
 
     _write_mac_to_env(mac)
     add(f"Saved {mac} to {ENV_FILE.name}")
-    return {"ok": True, "mac": mac, "log": log}
+    # Start the daemon — it will handle the GATT connect + encryption.
+    add("Starting daemon...")
+    start_res = await start_daemon()
+    log.extend(start_res.get("log", []))
+    if not start_res.get("ok"):
+        return {"ok": False, "mac": mac, "log": log,
+                "error": "daemon_failed_to_start"}
+    return {"ok": True, "mac": mac, "log": log,
+            "daemon_started": True}
 
 
 async def start_daemon(boost: bool = False) -> dict:
@@ -283,6 +321,14 @@ async def start_daemon(boost: bool = False) -> dict:
     if boost:
         env["WHOOP_BLE_BOOST"] = "1"
     venv_py = PROJECT_ROOT / ".venv" / "bin" / "python"
+    # Truncate the log so the wait-for-notify check below only sees output
+    # from THIS daemon run — otherwise old "notify OK" lines from a
+    # previous successful session would falsely satisfy the check.
+    try:
+        with open(DAEMON_LOG, "wb") as _f:
+            pass
+    except Exception:
+        pass
     proc = subprocess.Popen(
         [str(venv_py), "-m", "whoop_ble.daemon"],
         cwd=str(PROJECT_ROOT),
@@ -292,11 +338,47 @@ async def start_daemon(boost: bool = False) -> dict:
         stdin=subprocess.DEVNULL,
         start_new_session=True,
     )
+    proc_start_ts = time.time()
     await asyncio.sleep(2)
     log.append(f"Daemon PID: {proc.pid}")
     log.append(f"Log: {DAEMON_LOG}")
-    return {"ok": True, "pid": proc.pid, "mac": mac, "log": log,
-            "boost": boost}
+    # Wait up to 60s for the daemon to actually establish GATT + subscribe
+    # to the encrypted notify channels. Otherwise we'd return ok=True even
+    # when the daemon dies in a connect loop with NotPaired errors.
+    log_path = Path(DAEMON_LOG)
+    deadline = time.time() + 60.0
+    streaming = False
+    while time.time() < deadline:
+        await asyncio.sleep(2.0)
+        # Process died?
+        if proc.poll() is not None:
+            log.append(f"  ✗ daemon process exited (rc={proc.returncode})")
+            return {"ok": False, "pid": None, "mac": mac, "log": log,
+                    "error": "daemon_died"}
+        # Look for confirmed working subscribe in the log
+        try:
+            tail = log_path.read_text(errors="ignore")[-4000:]
+        except Exception:
+            tail = ""
+        if "notify OK: fd4b0003" in tail:
+            streaming = True
+            log.append("  ✓ daemon is streaming (notify OK on fd4b0003)")
+            break
+        if "Not paired" in tail or "AuthenticationFailed" in tail:
+            log.append("  ✗ daemon got Not paired / AuthenticationFailed —")
+            log.append("    bond is broken or strap not in pairing mode.")
+            log.append("    Hold side button ~5s (LED blue) and Force re-pair.")
+            try:
+                os.kill(proc.pid, signal.SIGTERM)
+            except Exception:
+                pass
+            return {"ok": False, "pid": None, "mac": mac, "log": log,
+                    "error": "encryption_failed"}
+    if not streaming:
+        log.append("  ⚠ daemon started but no notify yet after 60s")
+        log.append("    (strap may be out of range — daemon will keep retrying)")
+    return {"ok": streaming, "pid": proc.pid, "mac": mac, "log": log,
+            "boost": boost, "streaming": streaming}
 
 
 async def stop_daemon() -> dict:

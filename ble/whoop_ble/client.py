@@ -62,22 +62,116 @@ class WhoopBLE:
 
     async def connect(self) -> None:
         log.info("a ligar a %s ...", self.mac)
-        # Pre-scan to refresh BlueZ's device cache. Without this, after the
-        # strap goes off-wrist + back on, BleakClient.connect(mac) fails with
-        # 'Device ... not found' because the cached device record expired.
+        # Fast path: when the device is already bonded in BlueZ (the normal
+        # state after a successful pair), skip the scan entirely. BleakClient
+        # on the raw MAC walks the cached BlueZ device path and asks BlueZ
+        # to Connect() — BlueZ handles the LL connect + encryption transparently
+        # using the stored LTK. This is exactly what the Android APK does via
+        # device.connectGatt(). Scanning is only needed when the device is
+        # unbonded (first-time pair).
+        import subprocess
+        from bleak import BleakScanner
+        bonded = False
         try:
-            from bleak import BleakScanner
-            dev = await BleakScanner.find_device_by_address(self.mac, timeout=8.0)
+            out = subprocess.run(
+                ["bluetoothctl", "info", self.mac], timeout=4,
+                capture_output=True, text=True,
+            ).stdout
+            bonded = ("Bonded: yes" in out and "Paired: yes" in out)
+        except Exception:
+            pass
+        if bonded:
+            log.info("device bonded — direct connect (APK-style autoConnect)")
+            # When bonded and idle, BleakClient.connect() fails because the
+            # strap doesn't advertise (paired devices use direct-connect).
+            # We must ask BlueZ to bring the link up first via
+            # `bluetoothctl connect`, then attach Bleak to the live link.
+            # This mirrors the Android APK's BluetoothDevice.connectGatt()
+            # flow exactly: BlueZ wakes the strap on the background-page
+            # scanner, restores encryption from LTK, then GATT is ready.
+            try:
+                r = subprocess.run(
+                    ["bluetoothctl", "connect", self.mac],
+                    timeout=12, capture_output=True, text=True,
+                )
+                if "Connection successful" in r.stdout or "already connected" in r.stdout.lower():
+                    log.info("bluetoothctl: link up")
+                else:
+                    log.warning("bluetoothctl connect: %s", r.stdout.strip()[-200:])
+            except Exception as e:
+                log.warning("bluetoothctl connect raised: %s", e)
+            await asyncio.sleep(0.5)
+            # Short timeout (12 s) — when bonded, BlueZ either connects fast
+            # or the strap is out of range. Long timeouts just make recovery
+            # slow when the user re-enters range.
+            self.client = BleakClient(self.mac, timeout=12.0)
+            try:
+                await self.client.connect()
+            except Exception as e:
+                msg = str(e)
+                log.warning("bonded connect failed: %s — falling back to scan", msg)
+                if "InProgress" in msg or "in progress" in msg.lower():
+                    try:
+                        subprocess.run(
+                            ["bluetoothctl", "--timeout", "1", "scan", "off"],
+                            timeout=4, capture_output=True,
+                        )
+                    except Exception:
+                        pass
+                    await asyncio.sleep(3.0)
+                bonded = False  # fall through to scan path
+        if not bonded:
+            # Unbonded path — must discover via scan first.
+            last_exc: Optional[Exception] = None
+            dev = None
+            for attempt in range(4):
+                try:
+                    dev = await BleakScanner.find_device_by_address(
+                        self.mac, timeout=12.0
+                    )
+                    if dev is None:
+                        log.warning(
+                            "scan attempt %d: strap not advertising", attempt + 1
+                        )
+                        await asyncio.sleep(3.0)
+                        continue
+                    log.info("scan: found %s (%s)", dev.address, dev.name or "?")
+                    break
+                except Exception as e:
+                    last_exc = e
+                    msg = str(e)
+                    log.warning("scan attempt %d raised: %s", attempt + 1, msg)
+                    if "InProgress" in msg or "in progress" in msg.lower():
+                        try:
+                            subprocess.run(
+                                ["bluetoothctl", "--timeout", "1", "scan", "off"],
+                                timeout=4, capture_output=True,
+                            )
+                        except Exception:
+                            pass
+                        await asyncio.sleep(4.0)
+                    else:
+                        await asyncio.sleep(2.0)
             if dev is None:
-                log.warning("pre-scan: strap not advertising — try connect anyway")
+                log.info("scan exhausted — last-resort raw MAC connect")
                 self.client = BleakClient(self.mac, timeout=45.0)
             else:
-                log.info("pre-scan: found %s (%s)", dev.address, dev.name or "?")
                 self.client = BleakClient(dev, timeout=45.0)
+            await self.client.connect()
+        log.info("ligado: %s", self.client.is_connected)
+        # Whoop's proprietary characteristics (fd4b0003/4/5/7) require an
+        # encrypted link (LE Secure Connections). The strap firmware refuses
+        # standalone `bluetoothctl pair` because it expects pairing OVER an
+        # already-open ATT connection. Calling BleakClient.pair() invokes
+        # BlueZ's Device1.Pair() on the live connection — this is the exact
+        # behaviour the official Android APK uses (it calls
+        # BluetoothDevice.createBond() after the GATT connection is up).
+        # Safe to call even when already bonded (returns immediately).
+        try:
+            paired = await asyncio.wait_for(self.client.pair(), timeout=25.0)
+            log.info("pair() → %s", paired)
         except Exception as e:
-            log.warning("pre-scan failed (%s) — fallback to raw mac connect", e)
-            self.client = BleakClient(self.mac, timeout=45.0)
-        await self.client.connect()
+            log.warning("pair() falhou (%s) — encrypted chars vão estar inacessíveis", e)
         log.info("ligado: %s", self.client.is_connected)
         # MTU exchange — sem isto fica em 23 e a strap nunca responde porque
         # qualquer frame Whoop (>20 bytes app data) é truncado/descartado.
