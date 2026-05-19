@@ -108,7 +108,6 @@ async def drain_v2(
 
     def on_any(data: bytes, char_uuid: str) -> None:
         nonlocal chunk_count, bytes_count, last_packet_at
-        last_packet_at = time.time()
         # Try the Maverick decoder first
         try:
             f = decode_maverick(data, strict_crc=False)
@@ -116,6 +115,13 @@ async def drain_v2(
             f = None
         if f is None:
             return
+        # Only reset idle timer for HISTORICAL chunks or METADATA (the only
+        # packet types relevant to a drain). HR/IMU/realtime packets from
+        # the parallel notify channels would otherwise keep the drain alive
+        # forever while the strap is silent on historical.
+        if f.packet_type in (PacketType.HISTORICAL_DATA.value,
+                             PacketType.METADATA.value):
+            last_packet_at = time.time()
 
         rec = {
             "rx_ts": time.time(),
