@@ -86,40 +86,57 @@ class WhoopBLE:
             # strap doesn't advertise (paired devices use direct-connect).
             # We must ask BlueZ to bring the link up first via
             # `bluetoothctl connect`, then attach Bleak to the live link.
-            # This mirrors the Android APK's BluetoothDevice.connectGatt()
-            # flow exactly: BlueZ wakes the strap on the background-page
-            # scanner, restores encryption from LTK, then GATT is ready.
+            link_up = False
             try:
                 r = subprocess.run(
                     ["bluetoothctl", "connect", self.mac],
-                    timeout=12, capture_output=True, text=True,
+                    timeout=15, capture_output=True, text=True,
                 )
-                if "Connection successful" in r.stdout or "already connected" in r.stdout.lower():
+                if ("Connection successful" in r.stdout or
+                    "already connected" in r.stdout.lower()):
                     log.info("bluetoothctl: link up")
+                    link_up = True
                 else:
-                    log.warning("bluetoothctl connect: %s", r.stdout.strip()[-200:])
+                    log.warning("bluetoothctl connect: %s",
+                                r.stdout.strip()[-200:])
             except Exception as e:
                 log.warning("bluetoothctl connect raised: %s", e)
-            await asyncio.sleep(0.5)
-            # Short timeout (12 s) — when bonded, BlueZ either connects fast
-            # or the strap is out of range. Long timeouts just make recovery
-            # slow when the user re-enters range.
-            self.client = BleakClient(self.mac, timeout=12.0)
-            try:
-                await self.client.connect()
-            except Exception as e:
-                msg = str(e)
-                log.warning("bonded connect failed: %s — falling back to scan", msg)
-                if "InProgress" in msg or "in progress" in msg.lower():
-                    try:
-                        subprocess.run(
-                            ["bluetoothctl", "--timeout", "1", "scan", "off"],
-                            timeout=4, capture_output=True,
-                        )
-                    except Exception:
-                        pass
-                    await asyncio.sleep(3.0)
-                bonded = False  # fall through to scan path
+            if link_up:
+                # CRITICAL: give BlueZ ~2s to populate the D-Bus device
+                # object after Connected=yes, otherwise BleakClient.connect
+                # races and times out with "Device not found".
+                await asyncio.sleep(2.0)
+                # Resolve via BlueZ object manager (works even when not
+                # advertising, since we already have a live connection).
+                dev = None
+                try:
+                    dev = await BleakScanner.find_device_by_address(
+                        self.mac, timeout=4.0
+                    )
+                except Exception:
+                    pass
+                self.client = BleakClient(
+                    dev or self.mac, timeout=20.0
+                )
+                try:
+                    await self.client.connect()
+                except Exception as e:
+                    msg = str(e)
+                    log.warning("bonded connect failed: %s — falling back to scan",
+                                msg)
+                    if "InProgress" in msg or "in progress" in msg.lower():
+                        try:
+                            subprocess.run(
+                                ["bluetoothctl", "--timeout", "1",
+                                 "scan", "off"],
+                                timeout=4, capture_output=True,
+                            )
+                        except Exception:
+                            pass
+                        await asyncio.sleep(3.0)
+                    bonded = False  # fall through to scan path
+            else:
+                bonded = False
         if not bonded:
             # Unbonded path — must discover via scan first.
             last_exc: Optional[Exception] = None

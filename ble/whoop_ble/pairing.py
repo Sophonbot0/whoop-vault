@@ -179,6 +179,18 @@ async def pair_whoop(mac: Optional[str] = None,
     # Fast-path: bond already exists AND we can talk to the strap.
     saved = mac or _read_mac_from_env()
     if saved and not force:
+        # First check the on-disk bond — survives BlueZ "Device not available"
+        # transient states. If a bond file exists, NEVER wipe it without
+        # explicit force=True from the user.
+        adapter_dir = Path("/var/lib/bluetooth")
+        on_disk_bonded = False
+        try:
+            for ad in adapter_dir.iterdir():
+                if (ad / saved.upper() / "info").exists():
+                    on_disk_bonded = True
+                    break
+        except Exception:
+            pass
         try:
             rc, info = await _bluetoothctl(f"info {saved}", timeout=5.0)
             bonded = "Bonded: yes" in info
@@ -203,9 +215,39 @@ async def pair_whoop(mac: Optional[str] = None,
                 return {"ok": start_res.get("ok", False), "mac": saved,
                         "log": log, "already_paired": True,
                         "daemon_started": start_res.get("ok", False)}
+            elif on_disk_bonded:
+                # Bond exists on disk but BlueZ doesn't see it (likely a
+                # transient "Device not available" between scans). Restart
+                # bluetoothd to reload the bond — DO NOT wipe it.
+                add("  bond exists on disk but BlueZ has no Device entry —")
+                add("  restarting bluetooth service to reload bond...")
+                import subprocess as _sp
+                try:
+                    _sp.run(["sudo", "-n", "systemctl", "restart",
+                             "bluetooth"], timeout=15, capture_output=True)
+                    await asyncio.sleep(5)
+                except Exception as e:
+                    add(f"  (warn: could not restart bluetooth: {e})")
+                # Re-check after restart
+                rc2, info2 = await _bluetoothctl(f"info {saved}", timeout=5.0)
+                if "Bonded: yes" in info2 and "Paired: yes" in info2:
+                    add("  ✓ bond reloaded from disk")
+                    if mac:
+                        _write_mac_to_env(saved)
+                    add("  → starting daemon")
+                    start_res = await start_daemon()
+                    log.extend(start_res.get("log", []))
+                    return {"ok": start_res.get("ok", False), "mac": saved,
+                            "log": log, "already_paired": True,
+                            "daemon_started": start_res.get("ok", False)}
+                add("  ⚠ bond on disk could not be reloaded —")
+                add("    refusing to wipe it. Click 'Force re-pair' if you really")
+                add("    want to start over (LED must be flashing blue rapid).")
+                return {"ok": False, "mac": saved, "log": log,
+                        "error": "bond_reload_failed"}
             else:
-                add(f"  bond half-state (Paired={paired} Bonded={bonded}) — "
-                    "doing full re-pair")
+                add(f"  no bond (Paired={paired} Bonded={bonded}) — "
+                    "running full pair flow")
         except Exception as e:
             add(f"  (info check failed: {e}; continuing with full pair)")
 
