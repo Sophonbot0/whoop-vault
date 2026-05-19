@@ -284,11 +284,16 @@ async def pair_whoop(mac: Optional[str] = None,
     await _bluetoothctl(f"trust {mac}")
     await asyncio.sleep(0.5)
 
-    add(f"Pairing {mac}...")
-    # CRITICAL: bluetoothctl requires the device to be currently discovered
-    # (live in its scan cache) before `pair` works. We run scan + sleep +
-    # pair in one bluetoothctl session via an inline python sleep wrapper
-    # — using a sub-shell so stdin sequencing is correct.
+    add(f"Pairing {mac} — connect first, then pair over open link...")
+    # CRITICAL bug in BlueZ 5.85 / Ubuntu 26.04: `bluetoothctl pair`
+    # internally calls MGMT Pair Device which fires LE Create Connection
+    # and then issues LE Create Connection Cancel ~60 ms later. The strap
+    # accepts the connection but bluetoothd has already given up, so SMP
+    # never starts and the call returns AuthenticationTimeout.
+    #
+    # Workaround that consistently works: use the slower `connect` D-Bus
+    # path (no premature cancel) to bring the link up, THEN issue `pair`
+    # on the already-open ATT link. The strap answers SMP immediately.
     rc, out = await _run([
         "bash", "-c",
         f"""(
@@ -296,16 +301,20 @@ async def pair_whoop(mac: Optional[str] = None,
           echo 'agent NoInputNoOutput'
           echo 'default-agent'
           echo 'scan le'
-          sleep 10
+          sleep 8
+          echo 'scan off'
+          sleep 1
+          echo 'connect {mac}'
+          sleep 12
           echo 'pair {mac}'
-          sleep 30
+          sleep 25
           echo 'trust {mac}'
           sleep 1
           echo 'info {mac}'
           echo 'quit'
         ) | bluetoothctl"""
-    ], timeout=60.0)
-    if "Pairing successful" in out or "AlreadyExists" in out:
+    ], timeout=70.0)
+    if "Pairing successful" in out or ("Bonded: yes" in out and "Paired: yes" in out):
         add("  ✓ pairing successful")
     elif "AuthenticationTimeout" in out or "AuthenticationFailed" in out:
         add("  ✗ strap refused pairing (AuthenticationTimeout)")
@@ -313,7 +322,7 @@ async def pair_whoop(mac: Optional[str] = None,
         add("      flashes BLUE rapidly, then try again.")
         return {"ok": False, "mac": mac, "log": log,
                 "error": "strap_not_in_pairing_mode"}
-    elif "Failed" in out:
+    elif "Failed to pair" in out:
         add(f"  ✗ pairing failed:\n{out[-400:]}")
         return {"ok": False, "mac": mac, "log": log,
                 "error": "pair_failed"}
