@@ -285,29 +285,33 @@ async def pair_whoop(mac: Optional[str] = None,
     await asyncio.sleep(0.5)
 
     add(f"Pairing {mac} — connect first, then pair over open link...")
-    # CRITICAL bug in BlueZ 5.85 / Ubuntu 26.04: `bluetoothctl pair`
-    # internally calls MGMT Pair Device which fires LE Create Connection
-    # and then issues LE Create Connection Cancel ~60 ms later. The strap
-    # accepts the connection but bluetoothd has already given up, so SMP
-    # never starts and the call returns AuthenticationTimeout.
-    #
-    # Workaround that consistently works: use the slower `connect` D-Bus
-    # path (no premature cancel) to bring the link up, THEN issue `pair`
-    # on the already-open ATT link. The strap answers SMP immediately.
+    # CRITICAL Ubuntu 26.04 / BlueZ 5.85 setup required:
+    # 1. `btmgmt bondable on` — bluetoothd disables bondable when nothing
+    #    requests pairing; without it, MGMT Pair returns Status: Disabled.
+    # 2. IO-cap NoInputNoOutput — strap has no display/keyboard, so MITM
+    #    can't work. Without this we get "MITM required" + AuthFailed.
+    # 3. Agent registered with NoInputNoOutput in the same bluetoothctl
+    #    session so the JustWorks confirmation is auto-accepted.
+    import subprocess as _sp
+    try:
+        _sp.run(["sudo", "-n", "btmgmt", "--index", "1", "io-cap", "3"],
+                timeout=4, capture_output=True)
+        _sp.run(["sudo", "-n", "btmgmt", "--index", "1", "bondable", "on"],
+                timeout=4, capture_output=True)
+    except Exception:
+        pass
     rc, out = await _run([
         "bash", "-c",
         f"""(
-          echo 'power on'
           echo 'agent NoInputNoOutput'
           echo 'default-agent'
-          echo 'scan le'
+          echo 'power on'
+          echo 'scan on'
           sleep 8
-          echo 'scan off'
-          sleep 1
-          echo 'connect {mac}'
-          sleep 12
           echo 'pair {mac}'
           sleep 25
+          echo 'yes'
+          sleep 3
           echo 'trust {mac}'
           sleep 1
           echo 'info {mac}'
