@@ -189,18 +189,18 @@ async def run_session(mac: str, conn) -> None:
         # Step F: high-freq sync mode (might unlock real-time streams)
         await safe_write(cmd_enter_high_freq_sync(), "ENTER_HIGH_FREQ_SYNC")
 
-        # Step G: optionally boost the BLE link parameters (7.5 ms conn
-        # interval + 251-byte data length). This 5× speedup is fragile on
-        # some firmware revisions — they reject the LE Connection Update
-        # and drop the link silently after ~20s. Default is now opt-in via
-        # the WHOOP_BLE_BOOST env var because the safer, slightly slower
-        # path keeps the session stable forever.
-        if os.environ.get("WHOOP_BLE_BOOST") == "1":
-            try:
-                from .conn_tuning import boost_link
-                boost_link(mac)
-            except Exception as e:
-                log.debug("conn-tuning skipped: %s", e)
+        # Step G: boost BLE link params for faster historical drain.
+        # Default: 15 ms conn interval + 251-byte DLE (~18 chunks/s vs
+        # ~12 at the firmware default 30 ms) — stable on every firmware
+        # revision tested. WHOOP_BLE_BOOST=1 pushes to 7.5 ms (~22 chunks/s,
+        # matches official app) but some firmware revs drop the link
+        # silently after ~20s.
+        try:
+            from .conn_tuning import boost_link
+            target_ms = 7.5 if os.environ.get("WHOOP_BLE_BOOST") == "1" else 15.0
+            boost_link(mac, prefer_ms=target_ms)
+        except Exception as e:
+            log.debug("conn-tuning skipped: %s", e)
 
         log.info("=== STREAMING (Ctrl+C para parar) ===")
 
@@ -259,16 +259,17 @@ async def run_session(mac: str, conn) -> None:
             if now - last_historical >= HISTORICAL_INTERVAL_S:
                 last_historical = now
                 try:
-                    # Re-apply the connection boost just before each drain
-                    # (opt-in via WHOOP_BLE_BOOST=1). The strap occasionally
-                    # renegotiates back to a slower interval; re-issuing the
-                    # HCI commands is a no-op if we're already fast.
-                    if os.environ.get("WHOOP_BLE_BOOST") == "1":
-                        try:
-                            from .conn_tuning import boost_link
-                            boost_link(mac)
-                        except Exception:
-                            pass
+                    # Re-apply the connection boost just before each drain.
+                    # The strap occasionally renegotiates back to a slower
+                    # interval; re-issuing the HCI commands is a no-op if
+                    # we're already fast.
+                    try:
+                        from .conn_tuning import boost_link
+                        target_ms = (7.5 if os.environ.get("WHOOP_BLE_BOOST") == "1"
+                                     else 15.0)
+                        boost_link(mac, prefer_ms=target_ms)
+                    except Exception:
+                        pass
                     log.info("→ SEND_HISTORICAL_DATA (drain)")
                     stats = await drain_v2(client, conn, idle_timeout=15.0, max_chunks=100000)
                     # Continuous-drain: if the strap still had chunks flowing

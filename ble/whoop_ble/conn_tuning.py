@@ -33,6 +33,21 @@ AF_BLUETOOTH = 31
 BTPROTO_HCI = 1
 
 
+def _adapter_index() -> int:
+    """Detect the active HCI adapter index (handles hci0 vs hci1 etc.)."""
+    import subprocess
+    try:
+        out = subprocess.run(["hciconfig"], capture_output=True, text=True,
+                             timeout=2.0).stdout
+        for line in out.splitlines():
+            if line.startswith("hci"):
+                # "hci1:   Type: Primary..."
+                return int(line.split(":", 1)[0][3:])
+    except Exception:
+        pass
+    return 0
+
+
 def _find_strap_handle(mac: str) -> Optional[int]:
     """Read /proc to find the LE ACL handle for ``mac``.
 
@@ -91,7 +106,7 @@ def set_conn_interval(mac: str, interval_ms: float = 7.5,
 
     try:
         s = socket.socket(AF_BLUETOOTH, socket.SOCK_RAW, BTPROTO_HCI)
-        s.bind((0,))  # hci0
+        s.bind((_adapter_index(),))
         try:
             s.send(pkt)
             log.info("conn-tuning: requested %.2f ms interval (handle=%d)",
@@ -124,7 +139,7 @@ def set_data_length(mac: str, tx_octets: int = 251, tx_time_us: int = 2120) -> b
     pkt = bytes([0x01]) + struct.pack("<HB", opcode, len(params)) + params
     try:
         s = socket.socket(AF_BLUETOOTH, socket.SOCK_RAW, BTPROTO_HCI)
-        s.bind((0,))
+        s.bind((_adapter_index(),))
         try:
             s.send(pkt)
             log.info("conn-tuning: requested %d-byte / %d µs data length",
@@ -138,7 +153,15 @@ def set_data_length(mac: str, tx_octets: int = 251, tx_time_us: int = 2120) -> b
         return False
 
 
-def boost_link(mac: str) -> None:
-    """Apply all known speedups in one call. Safe to repeat."""
-    set_conn_interval(mac, interval_ms=7.5)
+def boost_link(mac: str, prefer_ms: float = 7.5) -> float:
+    """Apply known speedups and return the interval actually requested.
+
+    Tries `prefer_ms` (default 7.5 ms = APK behaviour). The caller can
+    monitor connection drops and fall back to 15 ms via
+    ``boost_link(mac, prefer_ms=15.0)`` if the link is unstable.
+    Always raises Data Length to 251 bytes (huge throughput win, no
+    stability cost).
+    """
+    set_conn_interval(mac, interval_ms=prefer_ms)
     set_data_length(mac, tx_octets=251, tx_time_us=2120)
+    return prefer_ms
