@@ -364,8 +364,27 @@ async def start_daemon(boost: bool = False) -> dict:
     """
     pid = daemon_pid()
     if pid:
-        return {"ok": True, "already_running": True, "pid": pid,
-                "log": [f"Daemon already running (PID {pid})"]}
+        # Check if the running daemon already has the right boost mode.
+        # If the user clicked Boost but daemon is running without it
+        # (or vice versa), restart so the env var takes effect.
+        running_boost = False
+        try:
+            env_path = Path(f"/proc/{pid}/environ")
+            if env_path.exists():
+                content = env_path.read_text(errors="ignore")
+                running_boost = "WHOOP_BLE_BOOST=1" in content
+        except Exception:
+            pass
+        if running_boost == boost:
+            return {"ok": True, "already_running": True, "pid": pid,
+                    "log": [f"Daemon already running (PID {pid}, "
+                            f"boost={running_boost})"]}
+        # Mode mismatch — stop and restart.
+        try:
+            os.kill(pid, signal.SIGTERM)
+            await asyncio.sleep(3)
+        except Exception:
+            pass
     mac = _read_mac_from_env()
     if not mac:
         return {"ok": False, "log": ["No paired MAC found. Pair first."]}
